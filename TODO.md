@@ -152,7 +152,7 @@ python scripts/validate_dataset.py --data-dir data/raw/dataset --expected-pairs-
 
 ## Track 3: Behavior Tree Builder & Deterministic Divergence Function
 
-**Owner / name:** ____________________
+**Owner / name:** Arik Gershman
 
 **Scope:** extend the existing parser into a batch BT pipeline, tune compression, and calculate reproducible numerical divergence. The proposal does not prescribe a formula; the alignment and metric definitions below are explicit implementation decisions to document and test.
 
