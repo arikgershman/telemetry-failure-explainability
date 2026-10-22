@@ -1,4 +1,4 @@
-# Telemetry-Driven Abductive Reasoning
+# Telemetry-Driven Abductive Reasoning for Natural Language Explanations of Robotics Failures
 
 Foundational scaffolding for natural language explanations of robotics failures.
 This repository currently provides data contracts, subtask compression, and a
