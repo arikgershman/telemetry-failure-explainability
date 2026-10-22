@@ -1,0 +1,42 @@
+# Python and packaging
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+build/
+dist/
+
+# Virtual environments and local settings
+.venv/
+venv/
+env/
+.env
+.env.*
+.DS_Store
+.idea/
+.vscode/
+
+# Generated datasets (the small contract fixture stays versioned)
+/data/raw/
+/data/processed/
+!/data/sample/
+!/data/sample/**
+
+# Model weights and experiment outputs
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.onnx
+*.h5
+*.hdf5
+*.gguf
+checkpoints/
+weights/
+runs/
+wandb/

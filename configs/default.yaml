@@ -1,0 +1,26 @@
+simulation:
+  sim_hz: 500
+  sim_dt_s: 0.002
+  logging_hz: 50
+  logging_dt_s: 0.02
+  duration_min_s: 6.0
+  duration_max_s: 10.0
+  mock_duration_s: 8.0
+
+parser:
+  k_uniform_samples: 5
+  # Starter values for synthetic data, to be tuned on actual telemetry.
+  # An event occurs when abs(delta) > threshold in ANY component.
+  # No differences are computed across subtask boundaries.
+  major_event_thresholds:
+    joint_positions: 0.10      # rad
+    joint_velocities: 0.50     # rad/s
+    joint_torques: 1.00        # N m
+    gripper_state: 0.50        # normalized closure: 0=open, 1=closed
+    gripper_force: 2.00        # N
+    ee_pos: 0.03               # m, per x/y/z component
+    ee_quat: 0.10              # per w/x/y/z component
+    obj_pos: 0.03              # m, per x/y/z component
+    obj_quat: 0.10             # per w/x/y/z component
+    obj_vel: 0.15              # m/s, per x/y/z component
+    contact_force: 2.00        # N, scalar magnitude

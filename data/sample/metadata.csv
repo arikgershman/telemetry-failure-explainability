@@ -1,0 +1,2 @@
+pair_id,task,success_file,failure_file,failed_subtask,failure_mode,perturbation_param,perturbation_value,seed
+000,pick_up_object,success_000.csv,failure_000.csv,grasp,inadequate_grip_strength,gripper_force,3.0,723
