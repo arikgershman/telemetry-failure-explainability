@@ -158,16 +158,55 @@ python scripts/validate_dataset.py --data-dir data/raw/dataset --expected-pairs-
 
 ### Target milestone dates
 
-- **Oct. 30:** run the existing parser on the sample, define batch/alignment APIs, and add synthetic transport and timing edge cases.
+- [x] **Oct. 30 — completed Oct. 23:** run the existing parser on the sample, define batch/alignment APIs, and add synthetic transport and timing edge cases. Verification and public interfaces are recorded below.
 - **Nov. 6:** finish batch parsing, tune `k` and major-event thresholds on development data, and preserve the existing public API and sample reproducibility.
 - **Nov. 13:** convert the full accepted dataset to BT JSONs with computed divergence and publish compression/event-retention diagnostics.
+
+### Oct. 30 completion evidence and API handoff
+
+- [x] Rebuilt the checked-in pickup pair with the existing parser and reproduced all four sample files byte for byte in `data/processed/track3-oct30/mock/`. Each raw trace has 400 rows; the BT retains 31 success and 34 failure samples, including the 5.08/5.10/5.12 s grip-drop neighborhood. Shared schemas, default configuration, and versioned samples are unchanged.
+- [x] Added `build_paired_bts(metadata, data_dir, config) -> BatchBuildResult` in `parser/pipeline.py`. It accepts `Sequence[MetadataRow]` and `CompressionConfig`, reuses `build_paired_bt()`, and returns ordered `trees` and `errors` tuples. Each input pair produces exactly one tree or a `PairBuildError` containing its ID, source filenames, exception type, and message. Duplicate IDs reject the batch; an empty sequence returns empty tuples. File/validation failures do not prevent later pairs from being processed. Metadata CSV errors still raise from `read_metadata_csv()` before batch construction.
+- [x] Added `align_subtask_samples(node: SubtaskBT) -> AlignedSubtask` in `parser/divergence.py`. It returns the shared progress grid, failure-run absolute timestamps, and success/failure arrays for every `TelemetryFeature`; scalar shapes are `(n,)`, vector shapes `(n, components)`. Interpolation is linear for continuous features, previous-value for gripper closure, and normalized/sign-aligned shortest-path SLERP for quaternions. A singleton stays constant over its partner's grid; two singletons compare once at progress zero. Queries within `1e-12` progress of an observed sample snap to that sample to avoid roundoff-induced transitions; the grid remains the unrounded sorted union. Inputs are not mutated, and interpolated values are comparisons rather than new observations.
+- [x] Added synthetic tests for both task templates, transport semantics, seven-joint arrays, unequal stage lengths/sample counts, shifted timestamps, singleton stages, gripper transitions, quaternion sign/shortest-path behavior, malformed or missing files, and missing/repeated/reordered stages on either side. The additional completion audit on Oct. 23 passes all **97 tests with warnings treated as errors**, including the original parser/reproducibility tests, 100 seeded analytic-motion cases, raw-validation failures, and batch error ordering/preflight checks.
+- [x] Completed an independent mixed-task stress check: 100 synthetic pairs (50 per task), one through nine joints, unequal stage lengths, and `k=0/1/5/100`, for 400 successful pair builds and 1,400 aligned subtasks. All trees round-trip through the schema, all aligned values are finite, and input files remain unchanged. Fresh generation reproduces all four sample files byte for byte, and the documented example passes verbatim. Fixed a small-angle quaternion approximation exposed by this audit using stable SLERP weights; differently sampled constant-angular-speed motion now agrees within numerical tolerance. Evidence is in `runs/track3-oct30/verification.json`; these synthetic parameter checks are validation, not train/dev tuning.
+
+Both APIs and their result types are exported from `telemetry_reasoning.parser`. The batch API is currently in-memory and leaves divergence null. Dataset serialization, the CLI/configs, compression tuning/reporting, and divergence metric calculation remain on the Nov. 6/13 milestones. Alignment removes pure duration differences; duration is not a v1 divergence feature. Its mapped failure timestamps can be interpolated times and must not be presented as exact observed onset.
+
+Reproduce the Oct. 30 verification from the repository root (after installing the project into `.venv`):
+
+```bash
+PYTHONPATH=src .venv/bin/python -W error -m pytest
+PYTHONPATH=src .venv/bin/python scripts/generate_mock_pair.py --output-dir data/processed/track3-oct30/mock --seed 723
+PYTHONPATH=src .venv/bin/python - <<'PY'
+from pathlib import Path
+from telemetry_reasoning.config import load_config
+from telemetry_reasoning.io import read_metadata_csv
+from telemetry_reasoning.parser import align_subtask_samples, build_paired_bts
+from telemetry_reasoning.schemas import PairedBehaviorTree
+
+sample = Path("data/sample")
+config = load_config("configs/default.yaml")
+result = build_paired_bts(read_metadata_csv(sample / "metadata.csv"), sample, config.parser)
+assert not result.errors
+tree, = result.trees
+assert tree == PairedBehaviorTree.model_validate_json((sample / "pair_000_bt.json").read_text())
+for name in ("success_000.csv", "failure_000.csv", "metadata.csv", "pair_000_bt.json"):
+    assert (sample / name).read_bytes() == (Path("data/processed/track3-oct30/mock") / name).read_bytes()
+for node in tree.subtasks:
+    aligned = align_subtask_samples(node)
+    assert node.deterministic_divergence is None
+    print(node.subtask.value, len(node.success_samples), len(node.failure_samples), len(aligned.progress))
+PY
+```
+
+Expected columns are subtask, retained success count, retained failure count, and alignment grid count: `approach 7 7 7`, `align 7 7 7`, `grasp 10 13 13`, `lift 7 7 7`.
 
 ### Files to create/modify
 
 - **Modify (exclusive ownership):** `src/telemetry_reasoning/parser/compressor.py`, `src/telemetry_reasoning/parser/__init__.py`, `tests/test_parser.py`.
-- **Create:** `src/telemetry_reasoning/parser/divergence.py`, `src/telemetry_reasoning/parser/pipeline.py`.
+- **Implemented; extend for later milestones:** `src/telemetry_reasoning/parser/divergence.py`, `src/telemetry_reasoning/parser/pipeline.py`.
 - **Create:** `configs/parser.yaml`, `configs/divergence.yaml`, `scripts/parse_dataset.py`.
-- **Create:** `tests/test_bt_pipeline.py`, `tests/test_divergence.py`.
+- **Implemented; extend for later milestones:** `tests/test_bt_pipeline.py`, `tests/test_divergence.py` (currently alignment tests; metric tests remain pending).
 - Keep `configs/default.yaml` and the checked-in sample unchanged. `configs/parser.yaml` is a complete `ProjectConfig` (`simulation` plus `parser`); load the separate divergence settings in `parser/divergence.py`.
 
 ### Input & output contracts
@@ -179,14 +218,15 @@ python scripts/validate_dataset.py --data-dir data/raw/dataset --expected-pairs-
 
 ### Definition of Done
 
-- [ ] Extend batch construction for both task templates with clear per-pair errors. Preserve original timestamps, semantic metadata, structural alignment, and all existing CSV/schema validation. Keep the existing `build_paired_bt()` default behavior (uncomputed divergence); the new batch pipeline adds divergence explicitly. Test unequal durations/counts, missing/repeated/reordered subtasks, and invalid pair files.
-- [ ] Retain first/last rows, up to `k` interior samples, and major-event neighbors `t-1/t/t+1`; compare adjacent rows only within a consecutive subtask. Preserve strict `>` threshold semantics, sorted deduplication, clipping, and `k=0` behavior. Existing quaternion compression uses component deltas; any replacement needs explicit regression evidence.
+- [x] Extend in-memory batch construction for both task templates with clear per-pair errors. Preserve original timestamps, semantic metadata, structural alignment, and all existing CSV/schema validation. Keep the existing `build_paired_bt()` default behavior (uncomputed divergence). Test unequal durations/counts, missing/repeated/reordered subtasks, and invalid pair files.
+- [ ] Finish dataset serialization, parse/compression reporting, configuration, and the CLI; add divergence explicitly in the new pipeline once metric computation is implemented.
+- [x] Retain first/last rows, up to `k` interior samples, and major-event neighbors `t-1/t/t+1`; compare adjacent rows only within a consecutive subtask. Preserve strict `>` threshold semantics, sorted deduplication, clipping, and `k=0` behavior. Existing quaternion compression uses component deltas; any replacement needs explicit regression evidence. Verified by the existing parser regression suite on Oct. 23.
 - [ ] Sweep a documented small `k` grid and per-feature event thresholds using train/dev data only. Measure compression ratio, event retention against raw traces, and resulting prompt size. Preserve the mock's 5.08/5.10/5.12 s grip-drop neighborhood; do not tune on test labels or overwrite the mock defaults.
-- [ ] Implement deterministic **within-subtask progress alignment**: map each trace's timestamps to `u=(t-t_start)/(t_end-t_start)` and compare on the sorted union of retained progress values. Linearly interpolate continuous scalar/vector features, use previous-value interpolation for gripper closure, and normalize/sign-align quaternions with shortest-path interpolation. Define a deterministic singleton-segment rule and test it. Never interpolate across subtask boundaries. Report that this alignment removes pure duration differences, so duration itself is not a v1 divergence feature.
+- [x] Implement deterministic **within-subtask progress alignment**: map each trace's timestamps to `u=(t-t_start)/(t_end-t_start)` and compare on the sorted union of retained progress values. Linearly interpolate continuous scalar/vector features, use previous-value interpolation for gripper closure, and normalize/sign-align quaternions with shortest-path interpolation. Define a deterministic singleton-segment rule and test it. Never interpolate across subtask boundaries. Report that this alignment removes pure duration differences, so duration itself is not a v1 divergence feature. See the API handoff above for singleton and numerical-tolerance rules.
 - [ ] Define `delta_f(u)=max_j(abs(failure_f,j(u)-success_f,j(u)))` (one component for scalars), then `max_abs_deltas[f]=max_u(delta_f(u))` for all `TelemetryFeature` values. Quaternion deltas are dimensionless component differences after sign alignment, not radians. First divergence is the earliest grid point exceeding a configured per-feature threshold, mapped back to the **failure run's absolute timestamp**. Separate these paired-trace thresholds from compression's adjacent-row thresholds. Store a computed object with null first timestamp and zero deltas for identical traces.
 - [ ] Test known scalar/vector offsets, threshold equality, identical traces, shifted/differently sampled traces, quaternion `q` versus `-q`, and deterministic serialization. For the sample and a 2 N grip threshold, verify the first grip deviation at **5.10 s** and maximum grip delta **12 N**. Compare compressed-onset estimates against raw references and report their error; do not claim unobserved exact physical onset.
 
-Implement and pass:
+Later milestone acceptance commands (the tests exist now; the CLI/configs and full dataset are still pending):
 
 ```bash
 python -m pytest tests/test_parser.py tests/test_bt_pipeline.py tests/test_divergence.py
