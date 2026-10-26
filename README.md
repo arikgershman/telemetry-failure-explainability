@@ -37,6 +37,46 @@ python -m pip install -e '.[sim]'  # MuJoCo
 python -m pip install -e '.[llm]'  # torch, transformers, trl, peft, bitsandbytes
 ```
 
+## MuJoCo Simulation
+
+MuJoCo is used for physics-based robotics simulation, with robot models provided by the [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie). Our initial simulation uses the Franka Emika Panda robotic arm.
+
+### Setup
+
+Install the simulation dependencies from the repository root:
+
+```bash
+python -m pip install -e '.[sim]'
+```
+
+Initialize the MuJoCo Menagerie Git submodule:
+
+```bash
+git submodule update --init --recursive
+```
+
+Alternatively, when cloning the repository for the first time:
+
+```bash
+git clone --recurse-submodules <repository-url>
+```
+
+The Panda model is located at:
+
+```text
+assets/mujoco_menagerie/franka_emika_panda/scene.xml
+```
+
+### Running the Simulation
+
+On macOS, launch the Panda viewer from the repository root:
+
+```bash
+mjpython -m telemetry_reasoning.sim.viewer
+```
+
+The viewer uses `mujoco.viewer.launch_passive()` with an explicit simulation loop that advances physics using `mujoco.mj_step()` and synchronizes visualization using `viewer.sync()`.
+
 ## Shared interfaces
 
 | Location | Responsibility |
