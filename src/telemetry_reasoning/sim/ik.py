@@ -1,96 +1,46 @@
 # inverse kinematics: how to change the seven joint targets to reduce the gripper's position and orientation errors
-
+"""Resolved-rate damped least-squares IK for the Panda's seven arm joints."""
 import numpy as np
 import mujoco
 
 
 class IKSolver:
-    """Damped least-squares Cartesian pose controller."""
-
-    def __init__(self, model, hand_name="hand"):
+    def __init__(self, model, offset=(0, 0, 0.103), max_speed=0.65):
         self.model = model
-        self.hand_id = model.body(hand_name).id
+        self.hand_id = model.body('hand').id
+        self.offset = np.asarray(offset, dtype=float)
+        self.jids = np.array([model.joint(f'joint{i}').id for i in range(1, 8)])
+        self.qids = model.jnt_qposadr[self.jids]
+        self.dids = model.jnt_dofadr[self.jids]
+        self.limits = model.jnt_range[self.jids]
+        self.max_speed = max_speed
+        self.target_q = None
 
-        self.joint_ids = [
-            model.joint(f"joint{i}").id
-            for i in range(1, 8)
-        ]
+    def pose(self, data):
+        rot = data.xmat[self.hand_id].reshape(3, 3).copy()
+        return data.xpos[self.hand_id].copy() + rot @ self.offset, rot
 
-        self.qpos_ids = np.array([
-            model.jnt_qposadr[j] for j in self.joint_ids
-        ])
-        self.dof_ids = np.array([
-            model.jnt_dofadr[j] for j in self.joint_ids
-        ])
-
-        self.lower = model.jnt_range[self.joint_ids, 0]
-        self.upper = model.jnt_range[self.joint_ids, 1]
-
-        # Grasp center relative to the hand frame.
-        self.grasp_offset = np.array([0.0, 0.0, 0.10])
-
-    def grasp_pose(self, data):
-        """Current grasp-center position and orientation."""
-        rotation = data.xmat[self.hand_id].reshape(3, 3)
-        position = (
-            data.xpos[self.hand_id]
-            + rotation @ self.grasp_offset
-        )
-        return position, rotation
-
-    def step(self, data, target_pos, target_rot,
-             gain=2.0, damping=0.08):
-        """Compute updated joint targets toward a desired 6D pose."""
-
-        mujoco.mj_forward(self.model, data)
-
-        position, rotation = self.grasp_pose(data)
-
-        # Translational error.
-        pos_error = target_pos - position
-
-        # Rotational error, expressed in world coordinates.
-        relative_rot = target_rot @ rotation.T
-        quat = np.zeros(4)
-        mujoco.mju_mat2Quat(quat, relative_rot.ravel())
-
-        rot_error = np.zeros(3)
-        mujoco.mju_quat2Vel(rot_error, quat, 1.0)
-
-        error = np.concatenate([pos_error, rot_error])
-
-        # Jacobian at the grasp center.
-        jac_pos = np.zeros((3, self.model.nv))
-        jac_rot = np.zeros((3, self.model.nv))
-
-        mujoco.mj_jac(
-            self.model,
-            data,
-            jac_pos,
-            jac_rot,
-            position,
-            self.hand_id,
-        )
-
-        jacobian = np.vstack([
-            jac_pos[:, self.dof_ids],
-            jac_rot[:, self.dof_ids],
-        ])
-
-        # Damped least-squares inverse.
-        dq = jacobian.T @ np.linalg.solve(
-            jacobian @ jacobian.T
-            + damping**2 * np.eye(6),
-            error,
-        )
-
-        # Limit commanded joint motion per simulation step.
-        dq = np.clip(dq * gain * self.model.opt.timestep,
-                     -0.005, 0.005)
-
-        targets = data.qpos[self.qpos_ids] + dq
-        targets = np.clip(targets, self.lower, self.upper)
-
-        data.ctrl[:7] = targets
-
-        return np.linalg.norm(pos_error), np.linalg.norm(rot_error)
+    def move(self, data, target_pos, target_rot, dt):
+        pos, rot = self.pose(data)
+        ep = np.asarray(target_pos) - pos
+        q = np.empty(4)
+        mujoco.mju_mat2Quat(q, (target_rot @ rot.T).ravel())
+        if q[0] < 0:
+            q *= -1
+        er = np.empty(3)
+        mujoco.mju_quat2Vel(er, q, 1.0)
+        jp = np.zeros((3, self.model.nv))
+        jr = np.zeros((3, self.model.nv))
+        mujoco.mj_jac(self.model, data, jp, jr, pos, self.hand_id)
+        J = np.vstack((jp[:, self.dids], jr[:, self.dids]))
+        e = np.r_[3.0 * ep, 2.0 * er]
+        dq = J.T @ np.linalg.solve(J @ J.T + 0.06**2 * np.eye(6), e)
+        dq = np.clip(dq, -self.max_speed, self.max_speed)
+        # Integrate from the previous command, not noisy measured positions.
+        if self.target_q is None:
+            self.target_q = data.qpos[self.qids].copy()
+        self.target_q = np.clip(self.target_q + dq * dt,
+                                self.limits[:, 0] + 0.02,
+                                self.limits[:, 1] - 0.02)
+        data.ctrl[:7] = self.target_q
+        return float(np.linalg.norm(ep)), float(np.linalg.norm(er))
