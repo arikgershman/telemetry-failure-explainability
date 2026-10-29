@@ -236,7 +236,7 @@ python scripts/parse_dataset.py --metadata data/raw/dataset/metadata.csv --data-
 
 ## Track 4: Rule-Based Baseline (Baseline 1) & Evaluation Pipeline
 
-**Owner / name:** ____________________
+**Owner / name:** David Simberg
 
 **Scope:** a failure-only threshold/template baseline, shared result validation, evaluation, and Matplotlib plots. This owner assembles the final smoke test using the other tracks' public CLIs; model owners remain responsible for their own tests.
 
