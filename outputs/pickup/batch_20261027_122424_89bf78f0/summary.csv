@@ -1,0 +1,11 @@
+run,result,reason,duration
+0,success,cube rise=0.162m,5.97
+1,success,cube rise=0.162m,6.002
+2,success,cube rise=0.162m,5.948
+3,success,cube rise=0.162m,6.0
+4,success,cube rise=0.162m,5.906
+5,success,cube rise=0.162m,5.972
+6,success,cube rise=0.162m,5.99
+7,success,cube rise=0.162m,5.918
+8,success,cube rise=0.162m,5.916
+9,success,cube rise=0.162m,5.994
