@@ -65,90 +65,115 @@ These are planned interfaces agreed by this task breakdown; each owner implement
 3. **Track 3 -> Tracks 4/5:** `pair_<pair_id>_bt.json` files validated as `PairedBehaviorTree`. After divergence runs, every node has a computed `DeterministicDivergence`; unchanged nodes have zero deltas and a null first-divergence timestamp. A null node-level object remains explicitly uncomputed. Track 5 may populate a deep copy of the sample with hand-checked divergence values for tests while Track 3 works.
 4. **Tracks 4/5 -> evaluator:** one JSONL prediction per `(pair_id, model_variant)`, with fields `pair_id`, `model_variant` (`baseline_1`, `baseline_2`, `baseline_3`, `main`), `predicted_failure_mode` (`FailureMode` value or null), `predicted_subtask` (`Subtask` value or null), `explanation` (string), `evidence` (list of `{subtask, timestamp, feature, value}` records using `TelemetryFeature` values), `status` (`ok`, `abstain`, `error`), and `backend` (`rules`, `hf`, `stub`). Evidence refers to observed failure samples, with `value` a finite scalar or vector matching that feature's `RawTelemetryRow` shape; paired/divergence comparisons may also be described in the explanation. Track 4 implements validation in `eval/contracts.py`; Track 5 can emit this documented format before that module lands. Additional runtime/token/config provenance belongs in a sibling run-manifest JSON. Stub outputs are for plumbing tests and must never be reported as LLM results.
 
-## Track 1: MuJoCo Environment & Nominal Task Controllers
+## Track 1: MuJoCo Simulation, Failure Injection & Paired Dataset Generation
 
 **Owner / name:** ____________________
 
-**Scope:** a reproducible robot environment, trustworthy telemetry, and successful waypoint state machines. Track 2 owns actual perturbations and paired batch collection.
+**Scope:** implement a physics-based robot simulation with successful waypoint controllers, configurable command perturbations, and a balanced paired success/failure telemetry dataset. Track 2 owns final reproducibility testing, dataset validation, and integration readiness.
 
 ### Target milestone dates
 
-- **Oct. 30:** load a pinned MuJoCo Menagerie arm/gripper, implement both tasks, and demonstrate success over 50 initial conditions per task; deliver the runner/hook interface for collection.
-- **Nov. 6:** validate replay, physical outcome checks, and logger calibration using the collected data; resolve simulator-side defects found by other tracks.
-- **Nov. 13:** supply a stable headless smoke run and final simulation/config provenance for integration.
+- **Oct. 30:** implement the MuJoCo Panda environment, both robotic tasks, and failure injection mechanisms; calibrate perturbations and collect 500 accepted pairs per task.
+- **Nov. 1:** complete the initial dataset audit and verify task, failure-mode, and initial-condition coverage.
 
-### Files to create/modify
+### Files created/modified
 
-- **Create:** `src/telemetry_reasoning/sim/environment.py`, `src/telemetry_reasoning/sim/controllers.py`, `src/telemetry_reasoning/sim/logger.py`, `src/telemetry_reasoning/sim/runner.py`.
-- **Create:** `configs/sim.yaml`, `scripts/run_nominal.py`.
-- **Create:** `tests/test_sim_environment.py`, `tests/test_nominal_controllers.py`, `tests/test_sim_logger.py`.
-- **Read/reuse:** `schemas.py`, `io.py`, `config.py`, and `configs/default.yaml`. Keep shared `sim/__init__.py` unchanged; consumers import concrete modules.
+- **Simulation:** `src/telemetry_reasoning/sim/` — MuJoCo environment, robotic controllers, episode runner, telemetry logging, and viewer.
+- **Failure injection:** `src/telemetry_reasoning/sim/failures.py`.
+- **Dataset generation:** `src/telemetry_reasoning/sim/dataset.py`.
+- **Dataset auditing:** `src/telemetry_reasoning/sim/audit_robot_dataset.py`.
+- **Calibration:** `data/calibration/pickup_recommended.csv`, `data/calibration/transport_recommended.csv`.
+- **Read/reuse:** `src/telemetry_reasoning/schemas.py`, `src/telemetry_reasoning/io.py`, and shared task/subtask definitions.
 
 ### Input & output contracts
 
-- Input: `Task`, `TASK_SUBTASKS`, seed, initial-condition ID, and the optional control hook above. `configs/sim.yaml` has its own validated loader in `sim/environment.py`; reuse `SimulationConfig` for timing and add robot/scene/controller settings there.
-- Output: validated `RawTelemetryRow` lists and CSVs, truthful task-success booleans, and diagnostic JSON under `data/raw/nominal/`. Use the sample CSVs to check encoding and units; do not copy their fabricated dynamics.
-- `transport_object` starts in a verified held-object state so it can run independently of the pickup dataset. Define 50 reproducible, physically feasible initial conditions per task and document pose/object/target variation.
+- Input: `Task`, `TASK_SUBTASKS`, simulation seed, initial-condition ID, and optional failure injection configuration. The runner supports `run_episode(*, task, seed, initial_condition_id, control_hook=None)` for nominal and perturbed execution.
+- Output: `RawTelemetryRow` observations with timestamps, subtask labels, joint positions/velocities/torques, gripper state/force, end-effector pose, object pose/velocity, and contact force. Simulation steps at 500 Hz and telemetry is recorded at 50 Hz.
+- Dataset: task-specific `success/` and `failure/` directories containing paired telemetry CSVs, with `metadata.csv`, `diagnostics.jsonl`, and `summary.json` for each task.
+- Coverage: 50 initial conditions × 10 accepted pairs = 500 pairs per task; 1,000 pairs and 2,000 telemetry CSVs total. Four selected failure modes are balanced at 125 pairs per mode per task.
 
 ### Definition of Done
 
-- [ ] Pin the Menagerie model revision and MuJoCo/runtime settings; document model retrieval in the CLI help and config. Resolve assets through a configured local path and record their revision rather than copying a large asset repository into Git.
-- [ ] Step at **500 Hz / 0.002 s**; log every tenth step at **50 Hz / 0.02 s** using integer step counts. Run within the proposal's 6-10 s horizon and document an end-exclusive logging convention (300-500 rows). Test exact cadence, no duplicate timestamps, units, quaternion normalization, joint-array consistency, and measured force sources.
-- [ ] Implement bounded waypoint state machines in the exact enum order. Verify pickup by object height and sustained grasp; verify transport by target tolerance and retained grasp. Thresholds belong in `configs/sim.yaml`, not in ground-truth labels or parser logic.
-- [ ] Log the subtask being commanded, even if a preceding physical action failed. Attempt subsequent bounded stages when physically valid; never equate a state-machine transition with task success. Flag unusable aborted traces for Track 2 instead of padding them.
-- [ ] Test reset reproducibility and the control hook with a fake physics backend. Test that a hook cannot mutate cached nominal commands or leak state into the next episode. A headless real-MuJoCo run verifies the same interface.
-- [ ] Produce a report with **50/50 successful initial conditions for each task**, using declared tolerances, and record failures honestly until corrected. Test both tasks and require the CLI to exit nonzero when any requested condition fails.
+- [x] Set up the Franka Emika Panda robot using MuJoCo Menagerie and implement the simulation environment, episode runner, and control interface.
+- [x] Implement bounded waypoint-based controllers for `pick_up_object` (`approach`, `align`, `grasp`, `lift`) and `transport_object` (`maintain_grasp`, `move_along_path`, `reach_target`).
+- [x] Step physics at **500 Hz / 0.002 s** and collect telemetry at **50 Hz / 0.02 s**, using the shared `RawTelemetryRow` schema and measured robot/object state.
+- [x] Implement 50 seeded initial-condition IDs per task and generate successful nominal executions for paired dataset collection.
+- [x] Implement all five `FailureMode` mechanisms: `position_error`, `orientation_error`, `inadequate_grip_strength`, `early_gripper_release`, and `excessive_speed`. Apply perturbations through the control hook rather than modifying recorded telemetry.
+- [x] Calibrate failure configurations and evaluate activation and task failure rates. Select four reliable modes for dataset generation; exclude `excessive_speed` after calibration showed insufficient failure reliability.
+- [x] Implement paired nominal/perturbed execution generation using matching seeds and initial-condition IDs, with acceptance checks, bounded retries, rejection diagnostics, and metadata recording.
+- [x] Generate **500 accepted success/failure pairs per task**, covering 50 initial conditions with 10 accepted pairs per condition.
+- [x] Balance the four selected failure modes at 125 accepted pairs per mode per task, producing **1,000 pairs and 2,000 telemetry CSVs**.
+- [x] Save telemetry, metadata, episode diagnostics, and generation summaries; complete an initial dataset audit confirming expected file counts, condition coverage, failure-mode balance, and zero reported issues.
 
-Implement and pass:
+Implemented generation command (run from `src/`):
 
 ```bash
-python -m pip install -e '.[sim]'
-python -m pytest tests/test_sim_environment.py tests/test_nominal_controllers.py tests/test_sim_logger.py
-python scripts/run_nominal.py --config configs/sim.yaml --task all --initial-conditions 50 --seed 723 --output-dir data/raw/nominal
+python -m telemetry_reasoning.sim.dataset \
+  --task all \
+  --pairs-per-task 500 \
+  --seed 723 \
+  --calibration ../data/calibration/pickup_recommended.csv ../data/calibration/transport_recommended.csv
 ```
 
-## Track 2: Failure Injection Engine & Batch Dataset Generation
+Generated dataset:
+
+```text
+outputs/dataset/batch_20261030_152125_e5ca72de/
+├── pick_up_object/
+│   ├── success/
+│   ├── failure/
+│   ├── metadata.csv
+│   ├── diagnostics.jsonl
+│   └── summary.json
+└── transport_object/
+    ├── success/
+    ├── failure/
+    ├── metadata.csv
+    ├── diagnostics.jsonl
+    └── summary.json
+```
+
+## Track 2: Simulation Validation & Dataset Finalization
 
 **Owner / name:** ____________________
 
-**Scope:** command perturbations, reproducible paired replay, collection, and dataset auditing. Develop against a fake runner immediately; switching to Track 1's runner is an adapter change.
+**Scope:** validate reproducibility, physical outcomes, telemetry integrity, and parser compatibility of the completed simulation dataset. Establish leakage-free dataset splits, automated checks, and a frozen dataset manifest for downstream Behavior Tree conversion and evaluation.
 
 ### Target milestone dates
 
-- **Oct. 30:** implement all five modes and collect **500 valid pairs per task**, across 50 initial conditions per task, with canonical CSVs and metadata.
-- **Nov. 6:** audit task/mode coverage, replayability, split isolation, and parser compatibility; replace invalid pairs with tracked retries.
-- **Nov. 13:** freeze the validated dataset manifest and checksum inventory for BT conversion and evaluation.
+- **Nov. 6:** validate deterministic replay, physical outcomes, telemetry quality, and parser compatibility; identify and resolve invalid pairs.
+- **Nov. 13:** finalize dataset splits, automated validation, provenance, and checksum inventory for downstream integration.
 
 ### Files to create/modify
 
-- **Create:** `src/telemetry_reasoning/sim/failures.py`, `src/telemetry_reasoning/sim/dataset.py`.
-- **Create:** `configs/failures.yaml`, `scripts/generate_dataset.py`, `scripts/validate_dataset.py`.
-- **Create:** `tests/test_failure_injection.py`, `tests/test_dataset_generation.py`.
-- **Read/reuse:** `MetadataRow`, `FailureMode`, CSV I/O, and Track 1's documented runner interface. Do not edit Track 1 modules.
+- **Extend:** `src/telemetry_reasoning/sim/audit_robot_dataset.py` for final dataset validation.
+- **Create:** reproducibility and failure-injection tests under `tests/`, using the existing repository test conventions.
+- **Create:** dataset `manifest.json` and checksum inventory.
+- **Read/reuse:** `src/telemetry_reasoning/sim/runner.py`, `src/telemetry_reasoning/sim/failures.py`, `src/telemetry_reasoning/sim/dataset.py`, `src/telemetry_reasoning/parser/compressor.py`, and shared schemas/I/O.
 
 ### Input & output contracts
 
-- Input: nominal control command, current timestamp/subtask, a deterministic perturbation spec, seed, and initial-condition ID. Keep mode configuration/validation in `sim/failures.py`.
-- Output: `data/raw/dataset/metadata.csv`, referenced `success_<pair_id>.csv` / `failure_<pair_id>.csv`, and `manifest.json`. Use task-prefixed IDs such as `pick_up_object_000` to remain unique in one combined metadata file.
-- `MetadataRow.failed_subtask` identifies the targeted injection stage, not a later observed symptom. `perturbation_param` names the changed quantity and `perturbation_value` is one finite scalar with documented units; axes, onset, duration, retries, and other details go in the sidecar.
-- Target size: **50 conditions x 10 accepted pairs = 500 pairs per task; 1,000 metadata rows and 2,000 trace CSVs total**. A pair contains one independently verified successful nominal run and one verified failed perturbed replay, not merely a run with an injection flag.
+- Input: the completed dataset under `outputs/dataset/batch_20261030_152125_e5ca72de/`, including paired telemetry CSVs, task-specific metadata, diagnostics, calibration configurations, and initial-condition IDs.
+- Output: validated paired telemetry, deterministic train/dev/test assignments, reproducibility and compatibility results, `manifest.json`, and file checksums.
+- Keep the existing `RawTelemetryRow` and `MetadataRow` schemas unchanged. Store split assignments, simulation provenance, and additional validation information in the manifest. Accepted traces must satisfy the parser's complete ordered subtask requirements without fabricating missing observations.
 
 ### Definition of Done
 
-- [ ] Implement the exact five `FailureMode` values with a task/subtask eligibility map: `position_error` offsets a Cartesian target; `orientation_error` rotates a target by a documented axis/angle; `inadequate_grip_strength` lowers grip force; `early_gripper_release` opens/releases before the intended completion; `excessive_speed` raises the motion speed scale. Document scalar parameter meanings, safe simulation bounds, onset/duration, and which command is changed.
-- [ ] Test every mode's targeted command, eligible stages, activation boundary, and no-op behavior outside its window. Ensure mode state resets between episodes and the nominal trace never receives the perturbation.
-- [ ] Replay identical initial state, controller, physics settings, and seed; change only the selected control perturbation. Use a separate deterministic random stream for choosing injections so selection cannot alter nominal environment randomness. Test equality before activation and reproducible reruns within a documented numeric tolerance.
-- [ ] Accept pairs only after checking nominal success, perturbed failure, finite 50 Hz telemetry, and the full ordered subtask template. Bound retries, preserve rejection reasons, and fail collection clearly if the requested count cannot be reached. Resume without duplicate IDs or partially written metadata rows.
-- [ ] Sample eligible subtask/mode combinations with recorded coverage. Create deterministic train/dev/test groups at the **initial-condition** level (proposed starting split: 35/5/10 conditions per task). Keep all ten repetitions, both traces, and any shared physical initial-state group in the same split; store assignments in `manifest.json` without expanding `MetadataRow`.
-- [ ] Validate exact counts, unique IDs, file existence, all five modes across the dataset, task/subtask validity, replay provenance, split separation, and absence of quarantined runs in accepted metadata. Fake-runner tests cover retries/resume without MuJoCo; real replay tests establish physics reproducibility.
+- [ ] Verify deterministic replay, identical paired initial states, pre-injection trajectory agreement, and perturbation isolation within documented numerical tolerances.
+- [ ] Validate physical task outcomes and telemetry integrity, including nominal success across all 50 initial conditions per task, logging cadence, units, quaternions, and measured force sources.
+- [ ] Check all accepted pairs for complete ordered subtask sequences and compatibility with `build_paired_bt()`; identify, quarantine, or replace incompatible traces.
+- [ ] Create deterministic train/dev/test splits grouped by initial condition (35/5/10 per task), keeping paired and repeated executions together and validating task/failure-mode coverage.
+- [ ] Add automated tests for simulation resets, control hooks, failure injection boundaries, deterministic replay, retries, and dataset validation; document simulation/configuration provenance and the exclusion of `excessive_speed`.
+- [ ] Generate the final dataset manifest and checksum inventory, verify metadata integrity and split isolation, and freeze the validated dataset for downstream processing.
 
-Implement and pass:
+### Final deliverables
 
-```bash
-python -m pytest tests/test_failure_injection.py tests/test_dataset_generation.py
-python scripts/generate_dataset.py --sim-config configs/sim.yaml --failure-config configs/failures.yaml --task all --initial-conditions 50 --pairs-per-task 500 --seed 723 --output-dir data/raw/dataset
-python scripts/validate_dataset.py --data-dir data/raw/dataset --expected-pairs-per-task 500 --expected-conditions-per-task 50
-```
+- Reproducibility, physical outcome, and telemetry validation results.
+- Parser-compatible paired telemetry dataset.
+- Leakage-free train/dev/test assignments.
+- Automated simulation and dataset validation tests.
+- Dataset manifest, simulation provenance, and checksum inventory.
+- Frozen dataset ready for telemetry compression, Behavior Tree construction, and model evaluation.
 
 ## Track 3: Behavior Tree Builder & Deterministic Divergence Function
 
