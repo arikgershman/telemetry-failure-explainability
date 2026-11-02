@@ -135,7 +135,7 @@ outputs/dataset/batch_20261030_152125_e5ca72de/
 
 ## Track 2: Simulation Validation & Dataset Finalization
 
-**Owner / name:** ____________________
+**Owner / name:** Suhani Chaudhary
 
 **Scope:** validate reproducibility, physical outcomes, telemetry integrity, and parser compatibility of the completed simulation dataset. Establish leakage-free dataset splits, automated checks, and a frozen dataset manifest for downstream Behavior Tree conversion and evaluation.
 
