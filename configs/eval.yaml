@@ -1,0 +1,39 @@
+# Settings for scripts/evaluate.py (eval/metrics.py loads this strictly).
+#
+# These are proposed operational choices, not values fixed by the proposal.
+# One mock pair only exercises the plumbing; it is not an accuracy estimate.
+eval:
+  # Variants that must be scored even if they have no predictions at all (each
+  # pair then counts as "missing"). Leave empty for smoke runs; use all four
+  # for the final study.
+  expected_variants: []          # e.g. [baseline_1, baseline_2, baseline_3, main]
+
+  # Slices smaller than this get a "plumbing check, not an accuracy estimate" warning.
+  min_n_for_reporting: 30
+
+  # Cited evidence must exist in the failure-only input and agree numerically.
+  # Timestamps match the nearest retained sample within this tolerance (raw
+  # cadence is 0.02 s, so 0.005 s cannot confuse neighbouring samples).
+  evidence:
+    timestamp_tol_s: 0.005
+    value_atol: 0.001
+    value_rtol: 0.01
+
+  # Optional onset scoring (needs a manifest injection timestamp per pair).
+  # Prediction timestamp = latest evidence timestamp inside the predicted
+  # subtask. Reported as detection minus injection time, only for pairs whose
+  # failed subtask was predicted correctly.
+  onset:
+    enabled: true
+    timestamp_rule: latest_evidence_in_predicted_subtask
+
+  # Blinded human rubric: n_pairs sampled with this seed; every eligible
+  # variant's explanation for those pairs is shuffled together. Stub output
+  # is never shown to raters.
+  rubric:
+    n_pairs: 10
+    seed: 723
+    exclude_backends: [stub]
+
+  plots:
+    dpi: 150
