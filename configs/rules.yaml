@@ -1,0 +1,35 @@
+# Thresholds for Baseline 1 (rule-based, failure-only detector).
+#
+# Unknown keys are rejected by the loader (models/rule_based.py).
+rules:
+  # Gripper closure is normalized: 0 = open, 1 = closed. Two thresholds give
+  # hysteresis so a continuously moving gripper is not flagged twice.
+  closed_state: 0.5
+  open_state: 0.2
+
+  # inadequate_grip_strength: closed-gripper force below the floor, sustained.
+  min_grip_force_n: 8.0
+  persist_s: 0.5            # shorter dips (closure ramp-up, noise) are ignored
+  grip_stages: [grasp, lift, maintain_grasp, move_along_path, reach_target]
+
+  # early_gripper_release: closed -> open inside one of these stages.
+  # reach_target is excluded because releasing there is expected.
+  release_stages: [grasp, lift, maintain_grasp, move_along_path]
+
+  # position_error (pick_up_object only: the object pose is the observable
+  # reference; transport has no target in the failure-only view, so it abstains).
+  position_stages: [approach, align]   # xy offset checked at end of each stage
+  z_check_stages: [align]              # height also checked at end of these
+  max_xy_offset_m: 0.02
+  max_z_error_m: 0.02
+  grasp_z_offset_m: 0.05               # expected ee_z - obj_z when aligned; verify against Track 1
+
+  # orientation_error (pick_up_object only): angle between ee_quat and obj_quat.
+  orientation_stages: [align]
+  max_orientation_rad: 0.2
+
+  # Downstream evidence only (never a predicted mode): the object failing to
+  # follow the end effector.
+  follow_stages: [lift, maintain_grasp, move_along_path]
+  min_ee_travel_m: 0.05
+  min_follow_ratio: 0.5
