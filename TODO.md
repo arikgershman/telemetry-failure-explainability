@@ -183,9 +183,9 @@ outputs/dataset/batch_20261030_152125_e5ca72de/
 
 ### Target milestone dates
 
-- [x] **Oct. 30 — completed Oct. 23:** run the existing parser on the sample, define batch/alignment APIs, and add synthetic transport and timing edge cases. Verification and public interfaces are recorded below.
-- **Nov. 6:** finish batch parsing, tune `k` and major-event thresholds on development data, and preserve the existing public API and sample reproducibility.
-- **Nov. 13:** convert the full accepted dataset to BT JSONs with computed divergence and publish compression/event-retention diagnostics.
+- [x] **Oct. 30:** run the existing parser on the sample, define batch/alignment APIs, and add synthetic transport and timing edge cases. Verification and public interfaces are recorded below.
+- [ ] **Nov. 6 — implementation complete; real-data tuning pending:** batch parsing, diagnostics, tuning tools, public API preservation, and sample reproducibility are verified. Calibrating `k` and major-event thresholds still requires Track 2's validated grouped train/dev manifest.
+- [ ] **Nov. 13:** convert the full accepted dataset to BT JSONs with computed divergence and publish compression/event-retention diagnostics.
 
 ### Oct. 30 completion evidence and API handoff
 
@@ -195,7 +195,7 @@ outputs/dataset/batch_20261030_152125_e5ca72de/
 - [x] Added synthetic tests for both task templates, transport semantics, seven-joint arrays, unequal stage lengths/sample counts, shifted timestamps, singleton stages, gripper transitions, quaternion sign/shortest-path behavior, malformed or missing files, and missing/repeated/reordered stages on either side. The additional completion audit on Oct. 23 passes all **97 tests with warnings treated as errors**, including the original parser/reproducibility tests, 100 seeded analytic-motion cases, raw-validation failures, and batch error ordering/preflight checks.
 - [x] Completed an independent mixed-task stress check: 100 synthetic pairs (50 per task), one through nine joints, unequal stage lengths, and `k=0/1/5/100`, for 400 successful pair builds and 1,400 aligned subtasks. All trees round-trip through the schema, all aligned values are finite, and input files remain unchanged. Fresh generation reproduces all four sample files byte for byte, and the documented example passes verbatim. Fixed a small-angle quaternion approximation exposed by this audit using stable SLERP weights; differently sampled constant-angular-speed motion now agrees within numerical tolerance. Evidence is in `runs/track3-oct30/verification.json`; these synthetic parameter checks are validation, not train/dev tuning.
 
-Both APIs and their result types are exported from `telemetry_reasoning.parser`. The batch API is currently in-memory and leaves divergence null. Dataset serialization, the CLI/configs, compression tuning/reporting, and divergence metric calculation remain on the Nov. 6/13 milestones. Alignment removes pure duration differences; duration is not a v1 divergence feature. Its mapped failure timestamps can be interpolated times and must not be presented as exact observed onset.
+Both APIs and their result types are exported from `telemetry_reasoning.parser`. At the Oct. 30 handoff, batch construction was in-memory; the Nov. 6 work below adds serialization, reporting, and tuning tools. Divergence remains null pending metric implementation. Alignment removes pure duration differences; duration is not a v1 divergence feature. Its mapped failure timestamps can be interpolated times and must not be presented as exact observed onset.
 
 Reproduce the Oct. 30 verification from the repository root (after installing the project into `.venv`):
 
@@ -226,11 +226,24 @@ PY
 
 Expected columns are subtask, retained success count, retained failure count, and alignment grid count: `approach 7 7 7`, `align 7 7 7`, `grasp 10 13 13`, `lift 7 7 7`.
 
+### Nov. 6 completion evidence and remaining dependencies
+
+- [x] Implemented exported `parse_dataset()` and `scripts/parse_dataset.py`, producing schema-valid `pair_<pair_id>_bt.json` files and a separate `parse_report.json`. Reports record per-pair rejections, source/output/configuration hashes, and compression diagnostics. Staged publication and fresh-output-directory checks prevent partial or stale batches; rejected source files are left untouched.
+- [x] Added complete `configs/parser.yaml`, preserving the existing defaults and byte-identical sample output. All divergence objects remain explicitly uncomputed. Settings are provisional, not calibrated on the real dataset.
+- [x] Added raw-reference compression diagnostics: per-stage counts, compression ratios, fixed-reference event-center/neighborhood retention, reconstruction errors for every feature, and leakage-free JSON payload sizes in characters/UTF-8 bytes (not model tokens).
+- [x] Implemented `scripts/tune_compression.py` and grouped-split validation. The sweep checks all manifest groups before opening telemetry, reads only the requested train/dev split, keeps reference-event thresholds fixed across candidates, and never changes configuration automatically. A reproducible synthetic demonstration covers both tasks, three seeds, `k=[0,2,5]`, and threshold scales `[0.5,1,2]`; this verifies the tools, not real-data calibration.
+- [x] Ran the parser against all 1,000 pairs in Gili's supplied `dataset_v1.zip`: pickup **384 written / 116 rejected**, transport **226 written / 274 rejected**. All 390 rejections are incomplete failure-stage sequences. The 610 compatible pairs retain 110,283 of 448,309 raw observations and all 71,708 fixed-reference feature-event neighborhoods. All output BTs validate; archive/source hashes are unchanged. Task outputs are separate because task-local pair IDs collide.
+- [x] Verified existing Track 4 baseline consumption and all **152 Track 3 tests** with warnings treated as errors. The full suite has **279 passed / 1 pre-existing Track 4 failure**: `test_label_vocabularies_match_shared_schemas`, because the evaluator vocabulary omits the shared `excessive_speed` mode. Other tracks' code is unchanged.
+- [ ] Calibrate and select production compression settings using Track 2's validated train/dev splits. The archive has no split manifest; the compatible subset is not balanced and contains no transport `inadequate_grip_strength` examples. Track 2 must resolve partial traces and freeze grouped splits before real tuning/final conversion.
+
+Handoff and commands: `src/telemetry_reasoning/parser/README.md`. Local generated evidence: `runs/track3-nov06/verification.json`, `runs/track3-nov06/archive-full-compatibility/verification.json`, and `runs/track3-nov06/synthetic-tuning/SYNTHETIC-evidence.json` (ignored outputs, not versioned fixtures).
+
 ### Files to create/modify
 
 - **Modify (exclusive ownership):** `src/telemetry_reasoning/parser/compressor.py`, `src/telemetry_reasoning/parser/__init__.py`, `tests/test_parser.py`.
 - **Implemented; extend for later milestones:** `src/telemetry_reasoning/parser/divergence.py`, `src/telemetry_reasoning/parser/pipeline.py`.
-- **Create:** `configs/parser.yaml`, `configs/divergence.yaml`, `scripts/parse_dataset.py`.
+- **Implemented:** `configs/parser.yaml`, `scripts/parse_dataset.py`, `scripts/tune_compression.py`, `src/telemetry_reasoning/parser/diagnostics.py`, `src/telemetry_reasoning/parser/tuning.py`, `tests/test_compression_diagnostics.py`, `tests/test_compression_tuning.py`, and the parser handoff README.
+- **Still to create for Nov. 13:** `configs/divergence.yaml`.
 - **Implemented; extend for later milestones:** `tests/test_bt_pipeline.py`, `tests/test_divergence.py` (currently alignment tests; metric tests remain pending).
 - Keep `configs/default.yaml` and the checked-in sample unchanged. `configs/parser.yaml` is a complete `ProjectConfig` (`simulation` plus `parser`); load the separate divergence settings in `parser/divergence.py`.
 
@@ -244,14 +257,22 @@ Expected columns are subtask, retained success count, retained failure count, an
 ### Definition of Done
 
 - [x] Extend in-memory batch construction for both task templates with clear per-pair errors. Preserve original timestamps, semantic metadata, structural alignment, and all existing CSV/schema validation. Keep the existing `build_paired_bt()` default behavior (uncomputed divergence). Test unequal durations/counts, missing/repeated/reordered subtasks, and invalid pair files.
-- [ ] Finish dataset serialization, parse/compression reporting, configuration, and the CLI; add divergence explicitly in the new pipeline once metric computation is implemented.
+- [x] Finish dataset serialization, parse/compression reporting, parser configuration, and the CLI. Preserve the existing API and sample reproducibility; explicitly report uncomputed divergence.
+- [ ] Add divergence explicitly in the new pipeline once metric computation and the separate divergence configuration are implemented (Nov. 13).
 - [x] Retain first/last rows, up to `k` interior samples, and major-event neighbors `t-1/t/t+1`; compare adjacent rows only within a consecutive subtask. Preserve strict `>` threshold semantics, sorted deduplication, clipping, and `k=0` behavior. Existing quaternion compression uses component deltas; any replacement needs explicit regression evidence. Verified by the existing parser regression suite on Oct. 23.
-- [ ] Sweep a documented small `k` grid and per-feature event thresholds using train/dev data only. Measure compression ratio, event retention against raw traces, and resulting prompt size. Preserve the mock's 5.08/5.10/5.12 s grip-drop neighborhood; do not tune on test labels or overwrite the mock defaults.
+- [ ] Sweep a documented small `k` grid and per-feature event thresholds using validated real train/dev data only. Measure compression ratio, event retention against raw traces, and resulting prompt size. Preserve the mock's 5.08/5.10/5.12 s grip-drop neighborhood; do not tune on test labels or overwrite the mock defaults. The guarded sweep implementation and synthetic development-data demonstration are complete; real calibration awaits Track 2's manifest.
 - [x] Implement deterministic **within-subtask progress alignment**: map each trace's timestamps to `u=(t-t_start)/(t_end-t_start)` and compare on the sorted union of retained progress values. Linearly interpolate continuous scalar/vector features, use previous-value interpolation for gripper closure, and normalize/sign-align quaternions with shortest-path interpolation. Define a deterministic singleton-segment rule and test it. Never interpolate across subtask boundaries. Report that this alignment removes pure duration differences, so duration itself is not a v1 divergence feature. See the API handoff above for singleton and numerical-tolerance rules.
 - [ ] Define `delta_f(u)=max_j(abs(failure_f,j(u)-success_f,j(u)))` (one component for scalars), then `max_abs_deltas[f]=max_u(delta_f(u))` for all `TelemetryFeature` values. Quaternion deltas are dimensionless component differences after sign alignment, not radians. First divergence is the earliest grid point exceeding a configured per-feature threshold, mapped back to the **failure run's absolute timestamp**. Separate these paired-trace thresholds from compression's adjacent-row thresholds. Store a computed object with null first timestamp and zero deltas for identical traces.
 - [ ] Test known scalar/vector offsets, threshold equality, identical traces, shifted/differently sampled traces, quaternion `q` versus `-q`, and deterministic serialization. For the sample and a 2 N grip threshold, verify the first grip deviation at **5.10 s** and maximum grip delta **12 N**. Compare compressed-onset estimates against raw references and report their error; do not claim unobserved exact physical onset.
 
-Later milestone acceptance commands (the tests exist now; the CLI/configs and full dataset are still pending):
+Current Nov. 6 verification commands (use a fresh/empty output directory):
+
+```bash
+PYTHONPATH=src .venv/bin/python -W error -m pytest tests/test_parser.py tests/test_bt_pipeline.py tests/test_divergence.py tests/test_compression_diagnostics.py tests/test_compression_tuning.py
+PYTHONPATH=src .venv/bin/python scripts/parse_dataset.py --metadata data/sample/metadata.csv --data-dir data/sample --config configs/parser.yaml --output-dir data/processed/track3-nov06/sample/bt
+```
+
+Later Nov. 13 acceptance commands (computed divergence, its configuration/CLI flag, and the final validated dataset are still pending):
 
 ```bash
 python -m pytest tests/test_parser.py tests/test_bt_pipeline.py tests/test_divergence.py
