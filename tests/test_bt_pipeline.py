@@ -1,13 +1,17 @@
 """Synthetic batch/transport contracts; no physics or model dependencies."""
 
 import csv
+import hashlib
+import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
 from telemetry_reasoning.config import CompressionConfig, load_config
 from telemetry_reasoning.io import read_metadata_csv, write_telemetry_csv
-from telemetry_reasoning.parser import build_paired_bt, build_paired_bts
+from telemetry_reasoning.parser import build_paired_bt, build_paired_bts, parse_dataset
 from telemetry_reasoning.parser import pipeline
 from telemetry_reasoning.schemas import (
     SUBTASK_METADATA, TASK_GOALS, TASK_SUBTASKS, MetadataRow, PairedBehaviorTree,
@@ -198,3 +202,135 @@ def test_duplicate_preflight_precedes_file_reads_and_programming_errors_propagat
         build_paired_bts([metadata, metadata], tmp_path, CompressionConfig())
     with pytest.raises(RuntimeError, match="unexpected builder defect"):
         build_paired_bts([metadata], tmp_path, CompressionConfig())
+
+
+def test_serialized_batch_integrates_both_tasks_and_reports_rejections(tmp_path):
+    rows = [write_pair(tmp_path, "pickup", Task.PICK_UP_OBJECT),
+            write_pair(tmp_path, "bad"), write_pair(tmp_path, "transport")]
+    (tmp_path / rows[1].failure_file).unlink()
+    source_hashes = {path.name: path.read_bytes() for path in tmp_path.glob("*.csv")}
+    result = parse_dataset(rows, tmp_path, CompressionConfig(), tmp_path / "bt")
+    assert [path.name for path in result.files] == ["pair_pickup_bt.json", "pair_transport_bt.json"]
+    report = json.loads(result.report_path.read_text())
+    assert report == result.report
+    assert report["counts"] == {"input_pairs": 3, "written_pairs": 2, "rejected_pairs": 1}
+    assert report["errors"][0]["pair_id"] == "bad"
+    assert report["divergence"]["status"] == "not_computed"
+    assert report["summary"]["pair_count"] == 2
+    for path, detail in zip(result.files, report["pairs"]):
+        tree = PairedBehaviorTree.model_validate_json(path.read_text())
+        assert path.name == f"pair_{tree.metadata.pair_id}_bt.json"
+        assert tree == build_paired_bt(tree.metadata, tmp_path, CompressionConfig())
+        assert all(node.deterministic_divergence is None for node in tree.subtasks)
+        assert detail["output_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+        assert detail["diagnostics"]["totals"]["raw_rows"] == 10 * len(tree.subtasks)
+        for side in ("success", "failure"):
+            source = tmp_path / getattr(tree.metadata, f"{side}_file")
+            assert detail["sources"][side]["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert {path.name: path.read_bytes() for path in tmp_path.glob("*.csv")} == source_hashes
+
+
+def test_serialization_preserves_sample_bytes_and_event_neighborhood(tmp_path):
+    sample = ROOT / "data/sample"
+    config = load_config(ROOT / "configs/parser.yaml")
+    assert config == load_config(ROOT / "configs/default.yaml")
+    rows = read_metadata_csv(sample / "metadata.csv")
+    result = parse_dataset(rows, sample, config.parser, tmp_path / "bt")
+    path, = result.files
+    assert path.read_bytes() == (sample / path.name).read_bytes()
+    node = PairedBehaviorTree.model_validate_json(path.read_text()).subtasks[2]
+    assert {5.08, 5.10, 5.12} <= {row.timestamp for row in node.failure_samples}
+    assert result.report["summary"]["totals"]["retained_rows"] == 65
+    # The report has no runtime fields; deterministic reruns in the same path
+    # after removing only our own output reproduce every byte.
+    before = {p.name: p.read_bytes() for p in result.report_path.parent.iterdir()}
+    for p in result.report_path.parent.iterdir():
+        p.unlink()
+    repeated = parse_dataset(rows, sample, config.parser, tmp_path / "bt")
+    assert {p.name: p.read_bytes() for p in repeated.report_path.parent.iterdir()} == before
+
+
+def test_serialization_preflight_protects_existing_outputs_and_rejects_unsafe_ids(tmp_path):
+    row = write_pair(tmp_path, "good")
+    output = tmp_path / "bt"
+    output.mkdir()
+    stale = output / "pair_stale_bt.json"
+    stale.write_text("keep this")
+    with pytest.raises(ValueError, match="absent or empty"):
+        parse_dataset([row], tmp_path, CompressionConfig(), output)
+    assert stale.read_text() == "keep this"
+    for pair_id in ("../escape", "a/b", "a\\b", "line\nbreak"):
+        unsafe = row.model_copy(update={"pair_id": pair_id})
+        with pytest.raises(ValueError, match="flat BT filename"):
+            parse_dataset([unsafe], tmp_path, CompressionConfig(), tmp_path / "new")
+    with pytest.raises(ValueError, match="must be unique"):
+        parse_dataset([row, row], tmp_path, CompressionConfig(), tmp_path / "new")
+    assert not (tmp_path / "new").exists()
+
+
+def test_all_rejected_and_empty_serialization_have_explicit_reports(tmp_path):
+    row = write_pair(tmp_path, "bad")
+    (tmp_path / row.success_file).unlink()
+    for name, rows, rejected in (("bad", [row], 1), ("empty", [], 0)):
+        result = parse_dataset(rows, tmp_path, CompressionConfig(), tmp_path / name)
+        assert result.files == ()
+        assert result.report["counts"]["rejected_pairs"] == rejected
+        assert result.report["summary"]["pair_count"] == 0
+        assert list(result.report_path.parent.iterdir()) == [result.report_path]
+
+
+def test_output_failure_never_publishes_partial_batch(tmp_path, monkeypatch):
+    row = write_pair(tmp_path, "good")
+    original = Path.write_text
+
+    def fail_report(path, *args, **kwargs):
+        if path.name == "parse_report.json":
+            raise OSError("synthetic storage failure")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_report)
+    with pytest.raises(OSError, match="storage failure"):
+        parse_dataset([row], tmp_path, CompressionConfig(), tmp_path / "bt")
+    assert not (tmp_path / "bt").exists()
+    assert not list(tmp_path.glob(".parse-*"))
+
+
+def test_parse_cli_exit_codes_provenance_and_downstream_loading(tmp_path):
+    sample = ROOT / "data/sample"
+    command = [sys.executable, str(ROOT / "scripts/parse_dataset.py"),
+               "--metadata", str(sample / "metadata.csv"), "--data-dir", str(sample),
+               "--config", str(ROOT / "configs/parser.yaml"), "--output-dir", str(tmp_path / "bt")]
+    process = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    assert process.returncode == 0, process.stderr
+    report = json.loads((tmp_path / "bt/parse_report.json").read_text())
+    assert report["provenance"]["metadata_sha256"] == hashlib.sha256((sample / "metadata.csv").read_bytes()).hexdigest()
+    assert report["provenance"]["dataset_validation"] == "not_asserted_by_parser"
+    # Real Track 4 consumer: report files must not look like BT inputs.
+    from scripts.run_baseline import run
+    from telemetry_reasoning.models.rule_based import load_rule_config
+
+    predictions = run(tmp_path / "bt", load_rule_config(ROOT / "configs/rules.yaml"))
+    assert len(predictions) == 1 and predictions[0]["pair_id"] == "000"
+    assert predictions[0]["status"] == "ok"
+    repeated = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    assert repeated.returncode == 2 and "fresh directory" in repeated.stderr
+
+
+def test_parse_cli_partial_rejection_and_malformed_metadata(tmp_path):
+    from telemetry_reasoning.io import write_metadata_csv
+
+    good, bad = write_pair(tmp_path, "good"), write_pair(tmp_path, "bad")
+    (tmp_path / bad.failure_file).unlink()
+    metadata_file = tmp_path / "metadata.csv"
+    write_metadata_csv(metadata_file, [good, bad])
+    command = [sys.executable, str(ROOT / "scripts/parse_dataset.py"),
+               "--metadata", str(metadata_file), "--data-dir", str(tmp_path),
+               "--output-dir", str(tmp_path / "bt")]
+    process = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    assert process.returncode == 1, process.stderr
+    assert (tmp_path / "bt/pair_good_bt.json").exists()
+    metadata_file.write_text("bad,header\n1,2\n")
+    process = subprocess.run(command[:-1] + [str(tmp_path / "bad-output")],
+                             cwd=ROOT, text=True, capture_output=True)
+    assert process.returncode == 2
+    assert not (tmp_path / "bad-output").exists()

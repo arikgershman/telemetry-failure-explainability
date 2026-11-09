@@ -1,0 +1,30 @@
+# Track 3 Nov. 6 parser configuration: complete shared ProjectConfig.
+# Provisional values preserve sample reproducibility. Real telemetry tuning is
+# pending Track 2's validated train/dev manifest; these are NOT calibrated.
+# Sweep independently with scripts/tune_compression.py, then review its report.
+simulation:
+  sim_hz: 500
+  sim_dt_s: 0.002
+  logging_hz: 50
+  logging_dt_s: 0.02
+  duration_min_s: 6.0
+  duration_max_s: 10.0
+  mock_duration_s: 8.0
+
+parser:
+  k_uniform_samples: 5
+  # Adjacent raw changes strictly greater than these values keep t-1/t/t+1.
+  # Vector/quaternion changes use max absolute component difference.
+  # Boundaries between consecutive subtasks are never event comparisons.
+  major_event_thresholds:
+    joint_positions: 0.10      # rad
+    joint_velocities: 0.50     # rad/s
+    joint_torques: 1.00        # N m
+    gripper_state: 0.50        # closure in [0,1]
+    gripper_force: 2.00        # N
+    ee_pos: 0.03               # m
+    ee_quat: 0.10              # dimensionless w/x/y/z components
+    obj_pos: 0.03              # m
+    obj_quat: 0.10             # dimensionless w/x/y/z components
+    obj_vel: 0.15              # m/s
+    contact_force: 2.00        # N
