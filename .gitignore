@@ -21,6 +21,7 @@ env/
 .vscode/
 
 # Generated datasets (the small contract fixture stays versioned)
+/outputs/dataset/
 /data/raw/
 /data/processed/
 !/data/sample/
