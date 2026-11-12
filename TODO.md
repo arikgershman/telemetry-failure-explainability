@@ -331,15 +331,25 @@ python scripts/plot_telemetry.py --data-dir data/sample --bt-dir data/processed/
 
 ## Track 5: LLM Reasoning Harness & Prompt Baselines (Baselines 2, 3, and Main Model)
 
-**Owner / name:** ____________________
+**Owner / name:** Arik Gershman
 
 **Scope:** one reproducible Hugging Face Llama-3.1-8B inference harness, three controlled prompt variants, and future training-data formatting. DPO/LoRA training is deferred to the later proposal milestone.
 
 ### Target milestone dates
 
-- **Oct. 30:** create the model adapter, mock inference backend, prompt views, and a compute/access smoke plan.
+- [x] **Oct. 30:** create the model adapter, mock inference backend, prompt views, and a compute/access smoke plan. Implemented in `src/telemetry_reasoning/models/llm.py`, `src/telemetry_reasoning/models/prompts.py`, `configs/llm.yaml`, the three prompt templates, and `scripts/run_llm.py`; see the [Track 5 handoff and smoke plan](src/telemetry_reasoning/models/README.md).
 - **Nov. 6:** run Baseline 2 (failure-only BT) and Baseline 3 (paired BT without divergence) with the same model/settings; finish output parsing and leakage tests.
 - **Nov. 13:** run the main paired-BT-plus-divergence variant, deliver comparable four-variant evaluation inputs with Track 4, and validate the DPO/LoRA data formatter.
+
+Oct. 30 verification (CPU/offline; fresh output directory):
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest tests/test_parser.py tests/test_prompts.py tests/test_llm.py
+PYTHONPATH=src .venv/bin/python scripts/run_llm.py --bt-dir data/sample --config configs/llm.yaml --variants baseline_2 baseline_3 --backend stub --output-dir runs/track5-oct30/baselines
+PYTHONPATH=src .venv/bin/python scripts/run_llm.py --config configs/llm.yaml --check-access
+```
+
+The handoff documents a separate synthetic enriched fixture for testing all three variants without altering `data/sample/`. Stub predictions deliberately abstain and are explicitly marked synthetic in their run manifest; they are not HF results. The lazy HF adapter uses one pinned instruction-tuned model/tokenizer revision, single-request greedy decoding, and explicit context-budget rejection. Real-model execution, batching, optional quantization, and training-data formatting remain later Track 5 work.
 
 ### Files to create/modify
 
