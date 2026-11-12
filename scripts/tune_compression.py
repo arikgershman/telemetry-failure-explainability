@@ -10,6 +10,7 @@ Example (requires the actual Track 2 sidecar, not an invented split)::
 The manifest must assign every metadata pair to train/dev/test and provide
 initial_condition_id. Test telemetry is never opened. Tuning defaults to dev;
 --split train is available for explicitly designated training diagnostics.
+Payload measurements include the full tree and its explicit observation states.
 This writes a report and never changes parser configuration or stored BTs.
 """
 

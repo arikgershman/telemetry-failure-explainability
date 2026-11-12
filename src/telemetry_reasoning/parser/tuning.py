@@ -20,7 +20,9 @@ from telemetry_reasoning.config import CompressionConfig
 from telemetry_reasoning.io import read_telemetry_csv
 from telemetry_reasoning.parser.compressor import build_paired_bt, compress_rows
 from telemetry_reasoning.parser.diagnostics import combine_diagnostics, compression_diagnostics
-from telemetry_reasoning.schemas import MetadataRow, PairedBehaviorTree, RawTelemetryRow, SubtaskBT
+from telemetry_reasoning.schemas import (
+    MetadataRow, PairedBehaviorTree, RawTelemetryRow, SubtaskBT, validate_subtask_sequence,
+)
 
 DEFAULT_K_GRID = (0, 2, 5)
 DEFAULT_THRESHOLD_SCALES = (0.5, 1.0, 2.0)
@@ -118,15 +120,29 @@ def _candidate_tree(
     base: PairedBehaviorTree, success_rows: Sequence[RawTelemetryRow], failure_rows: Sequence[RawTelemetryRow],
     config: CompressionConfig,
 ) -> PairedBehaviorTree:
-    # The public single-pair builder already validated the complete ordered
-    # template. Recompress the cached raw rows rather than rereading files for
-    # every grid point; retain semantics from that validated tree.
+    # Recompress cached observations while retaining the validated tree's full
+    # template and execution states. Match by name so an absent
+    # failure suffix cannot truncate the successful reference via zip().
     success, failure = compress_rows(success_rows, config), compress_rows(failure_rows, config)
+    for name, segments in (("success", success), ("failure", failure)):
+        validate_subtask_sequence(
+            [segment[0].subtask for segment in segments], base.metadata.task,
+            allow_partial=name == "failure", run_name=name,
+        )
+    success_by_subtask = {segment[0].subtask: segment for segment in success}
+    failure_by_subtask = {segment[0].subtask: segment for segment in failure}
+    nodes = []
+    for node in base.subtasks:
+        values = node.model_dump()
+        values.update(
+            success_samples=success_by_subtask[node.subtask],
+            failure_samples=failure_by_subtask.get(node.subtask, []),
+            deterministic_divergence=None,
+            divergence_status="uncomputed" if failure_by_subtask.get(node.subtask) else "not_comparable",
+        )
+        nodes.append(SubtaskBT.model_validate(values))
     return PairedBehaviorTree(
-        metadata=base.metadata, overall_goal=base.overall_goal,
-        subtasks=[SubtaskBT(subtask=node.subtask, metadata=node.metadata,
-                            success_samples=s_rows, failure_samples=f_rows)
-                  for node, s_rows, f_rows in zip(base.subtasks, success, failure)],
+        metadata=base.metadata, overall_goal=base.overall_goal, subtasks=nodes,
     )
 
 
@@ -168,7 +184,8 @@ def sweep_compression(
     tuning on whichever pairs happened to parse. No test telemetry is opened,
     hashed, reconstructed, or used to choose configurations. Caller-supplied
     metadata objects are only used for task/group joins and building selected
-    trees; failure labels are never selection inputs.
+    trees; failure labels are never selection inputs. Payload measurements
+    include the full tree representation and its explicit observation states.
     """
     if split not in ("train", "dev"):
         raise ValueError("compression tuning permits only train or dev, never test")
@@ -229,7 +246,7 @@ def sweep_compression(
                             Path(__file__).parents[1] / "io.py",
                             Path(__file__).parents[1] / "config.py")
     return {
-        "report_version": "1.0", "split": split,
+        "split": split,
         "dataset_context": {
             "declared_kind": manifest.get("dataset_kind") if isinstance(manifest.get("dataset_kind"), str) else "unspecified",
             "validation_status": "not established by compression tuning",

@@ -80,7 +80,7 @@ def test_mock_csvs_compress_into_valid_bt(generated_dir):
     assert all(node.deterministic_divergence is None for node in tree.subtasks)
 
 
-def test_versioned_sample_is_reproducible(generated_dir):
+def test_sample_is_reproducible(generated_dir):
     for name in ("success_000.csv", "failure_000.csv", "metadata.csv", "pair_000_bt.json"):
         assert (ROOT / "data/sample" / name).read_bytes() == (generated_dir / name).read_bytes()
 
@@ -91,6 +91,7 @@ def test_baseline_views_omit_ground_truth_and_excluded_inputs(generated_dir):
     tree.subtasks[2].deterministic_divergence = DeterministicDivergence(
         first_divergence_timestamp=5.1, max_abs_deltas={"gripper_force": 12.0},
     )
+    tree.subtasks[2].divergence_status = "computed"
     failure = tree.to_failure_only()
     paired = tree.to_paired_without_divergence()
     full = tree.to_full_paired()

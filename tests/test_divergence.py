@@ -21,12 +21,19 @@ def observation(timestamp, *, value=0.0, closure=1.0, quaternion=None, joints=7)
     )
 
 
-def node(success, failure):
+def node(success, failure, *, segment_end="transitioned"):
     return SubtaskBT(
         subtask=Subtask.MOVE_ALONG_PATH,
         metadata=SUBTASK_METADATA[Subtask.MOVE_ALONG_PATH].model_copy(deep=True),
         success_samples=success, failure_samples=failure,
+        failure_observation_status="observed" if failure else "not_observed",
+        failure_segment_end=segment_end if failure else None,
+        divergence_status="uncomputed" if failure else "not_comparable",
     )
+
+
+def partial_node(success, failure, *, segment_end="trace_end"):
+    return node(success, failure, segment_end=segment_end)
 
 
 def test_union_alignment_removes_duration_and_start_shift_without_index_pairing():
@@ -222,6 +229,8 @@ def test_alignment_rejects_invalid_segments(bad_side, problem, match):
     samples = getattr(pair, bad_side)
     if problem == "empty":
         samples.clear()
+        if bad_side == "failure_samples":
+            match = "observation status"
     elif problem == "duplicate":
         samples[1] = samples[0]
     elif problem == "reordered":
@@ -234,3 +243,148 @@ def test_alignment_rejects_invalid_segments(bad_side, problem, match):
         samples[0] = observation(samples[0].timestamp, quaternion=[0.0] * 4)
     with pytest.raises(ValueError, match=match):
         align_subtask_samples(pair)
+
+
+def test_transition_progress_alignment_reports_explicit_units_and_durations():
+    success = [observation(0.0, value=0.0), observation(2.0, value=20.0)]
+    failure = [observation(10.0, value=0.0), observation(11.0, value=5.0),
+               observation(14.0, value=20.0)]
+    aligned = align_subtask_samples(node(success, failure))
+    assert aligned.alignment_mode == "normalized_progress"
+    assert aligned.availability == "comparable"
+    assert aligned.elapsed_seconds is None
+    assert aligned.common_interval_seconds is None
+    assert aligned.success_duration_seconds == 2.0
+    assert aligned.failure_duration_seconds == 4.0
+    np.testing.assert_array_equal(aligned.progress, [0.0, 0.25, 1.0])
+    np.testing.assert_array_equal(aligned.success_timestamps, [0.0, 0.5, 2.0])
+    for feature in TelemetryFeature:
+        np.testing.assert_allclose(aligned.success_values[feature], aligned.failure_values[feature])
+
+
+def test_terminal_identical_short_prefix_does_not_stretch_to_reference_endpoint():
+    pair = partial_node(
+        [observation(0.0, value=0.0), observation(1.0, value=1.0),
+         observation(2.0, value=2.0)],
+        [observation(10.0, value=0.0), observation(11.0, value=1.0)],
+    )
+    before = pair.model_dump_json()
+    aligned = align_subtask_samples(pair)
+    assert aligned.alignment_mode == "common_elapsed_time"
+    assert aligned.availability == "comparable"
+    assert aligned.progress is None
+    assert aligned.common_interval_seconds == (0.0, 1.0)
+    assert aligned.success_duration_seconds == 2.0
+    assert aligned.failure_duration_seconds == 1.0
+    np.testing.assert_array_equal(aligned.elapsed_seconds, [0.0, 1.0])
+    np.testing.assert_array_equal(aligned.success_timestamps, [0.0, 1.0])
+    np.testing.assert_array_equal(aligned.failure_timestamps, [10.0, 11.0])
+    for feature in TelemetryFeature:
+        np.testing.assert_array_equal(aligned.success_values[feature], aligned.failure_values[feature])
+    assert pair.model_dump_json() == before
+    assert pair.divergence_status == "uncomputed"
+    assert pair.deterministic_divergence is None
+
+
+@pytest.mark.parametrize("failure_duration", [1.5, 6.0])
+def test_terminal_union_is_clipped_to_common_interval_without_extrapolation(failure_duration):
+    success_times = [0.0, 2.0, 4.0]
+    failure_elapsed = [0.0, 1.0, failure_duration]
+    aligned = align_subtask_samples(partial_node(
+        [observation(t, value=t) for t in success_times],
+        [observation(10.0 + t, value=t) for t in failure_elapsed],
+    ))
+    limit = min(4.0, failure_duration)
+    expected = sorted({t for t in success_times + failure_elapsed if t <= limit})
+    np.testing.assert_array_equal(aligned.elapsed_seconds, expected)
+    np.testing.assert_array_equal(aligned.success_timestamps, expected)
+    np.testing.assert_array_equal(aligned.failure_timestamps, np.asarray(expected) + 10.0)
+    assert aligned.common_interval_seconds == (0.0, limit)
+    assert aligned.failure_duration_seconds == failure_duration
+    # The timeout tail is preserved in the duration, never compared against a
+    # held final reference pose; a short failure never reaches the reference end.
+    for side in (aligned.success_values, aligned.failure_values):
+        np.testing.assert_allclose(side[TelemetryFeature.GRIPPER_FORCE], expected)
+    assert aligned.elapsed_seconds[-1] == limit
+
+
+@pytest.mark.parametrize("offset", [0.1, 1.0, 3.0, 10.0])
+def test_terminal_shifted_decimal_prefix_preserves_exact_closure_events(offset):
+    success = [observation(round(i * 0.02, 8), value=float(i), closure=float(i >= 1))
+               for i in range(4)]
+    failure = [observation(round(offset + i * 0.02, 8), value=float(i), closure=float(i >= 1))
+               for i in range(3)]
+    aligned = align_subtask_samples(partial_node(success, failure))
+    for feature in TelemetryFeature:
+        np.testing.assert_array_equal(aligned.success_values[feature], aligned.failure_values[feature])
+    assert aligned.elapsed_seconds[-1] <= 0.04 + 1e-12
+
+
+@pytest.mark.parametrize("singleton_side", ["success", "failure", "both"])
+def test_terminal_singletons_share_only_time_zero_without_holding_beyond_observations(singleton_side):
+    success = [observation(3.0, value=5.0)]
+    failure = [observation(8.0, value=5.0)]
+    if singleton_side == "success":
+        failure += [observation(8.5, value=7.0), observation(10.0, value=9.0)]
+    elif singleton_side == "failure":
+        success += [observation(3.5, value=7.0), observation(5.0, value=9.0)]
+    aligned = align_subtask_samples(partial_node(success, failure))
+    assert aligned.progress is None
+    assert aligned.common_interval_seconds == (0.0, 0.0)
+    np.testing.assert_array_equal(aligned.elapsed_seconds, [0.0])
+    np.testing.assert_array_equal(aligned.success_timestamps, [3.0])
+    np.testing.assert_array_equal(aligned.failure_timestamps, [8.0])
+    for side in (aligned.success_values, aligned.failure_values):
+        np.testing.assert_array_equal(side[TelemetryFeature.GRIPPER_FORCE], [5.0])
+
+
+def test_terminal_time_alignment_preserves_quaternion_path_and_previous_closure():
+    def quat(t):
+        return [np.cos(t * np.pi / 8), 0.0, 0.0, np.sin(t * np.pi / 8)]
+
+    aligned = align_subtask_samples(partial_node(
+        [observation(t, closure=float(t >= 1.0), quaternion=quat(t)) for t in [0.0, 1.0, 4.0]],
+        [observation(10.0 + t, closure=float(t >= 1.0), quaternion=(-2 * np.array(quat(t))).tolist())
+         for t in [0.0, 0.5, 1.0, 2.0]],
+    ))
+    np.testing.assert_array_equal(aligned.elapsed_seconds, [0.0, 0.5, 1.0, 2.0])
+    for side in (aligned.success_values, aligned.failure_values):
+        np.testing.assert_array_equal(side[TelemetryFeature.GRIPPER_STATE], [0, 0, 1, 1])
+    for feature in (TelemetryFeature.EE_QUAT, TelemetryFeature.OBJ_QUAT):
+        np.testing.assert_allclose(aligned.success_values[feature], [quat(t) for t in aligned.elapsed_seconds],
+                                   rtol=0, atol=1e-14)
+        np.testing.assert_allclose(aligned.success_values[feature], aligned.failure_values[feature],
+                                   rtol=0, atol=1e-14)
+
+
+def test_unobserved_stage_has_explicit_unavailable_comparison_and_empty_shaped_arrays():
+    pair = partial_node([observation(0.0), observation(2.0)], [])
+    before = pair.model_dump_json()
+    aligned = align_subtask_samples(pair)
+    assert aligned.availability == "not_comparable"
+    assert aligned.alignment_mode == "unavailable"
+    assert aligned.unavailability_reason == "failure stage has no observed samples"
+    assert aligned.progress is None
+    assert aligned.elapsed_seconds is None
+    assert aligned.common_interval_seconds is None
+    assert aligned.success_duration_seconds == 2.0
+    assert aligned.failure_duration_seconds is None
+    assert aligned.failure_timestamps.shape == aligned.success_timestamps.shape == (0,)
+    assert set(aligned.success_values) == set(aligned.failure_values) == set(TelemetryFeature)
+    for side in (aligned.success_values, aligned.failure_values):
+        assert side[TelemetryFeature.GRIPPER_FORCE].shape == (0,)
+        assert side[TelemetryFeature.JOINT_POSITIONS].shape == (0, 7)
+        assert side[TelemetryFeature.EE_POS].shape == (0, 3)
+        assert side[TelemetryFeature.EE_QUAT].shape == (0, 4)
+    assert pair.model_dump_json() == before
+
+
+@pytest.mark.parametrize("update,match", [
+    ({"failure_observation_status": "not_observed"}, "observation status"),
+    ({"failure_segment_end": None}, "segment end"),
+    ({"failure_samples": []}, "observation status"),
+])
+def test_alignment_checks_mutated_observation_metadata(update, match):
+    pair = partial_node([observation(0.0), observation(1.0)], [observation(3.0)])
+    with pytest.raises(ValueError, match=match):
+        align_subtask_samples(pair.model_copy(update=update))
