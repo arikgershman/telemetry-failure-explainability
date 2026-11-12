@@ -1,0 +1,13 @@
+# Track 5 Oct. 30: shared settings for all prompt variants.
+# Model/tokenizer use the same immutable instruction-tuned checkpoint revision.
+# Stub execution neither loads this checkpoint nor requires optional packages.
+llm:
+  model_id: meta-llama/Llama-3.1-8B-Instruct
+  revision: 0e9e39f249a16976918f6564b8830bc894c89659
+  device: cuda
+  dtype: bfloat16
+  context_window_tokens: 65536
+  max_new_tokens: 512
+  seed: 723
+  local_files_only: true
+  quantization: none
