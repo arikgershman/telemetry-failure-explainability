@@ -1,5 +1,4 @@
 {
-  "schema_version": "1.0",
   "metadata": {
     "pair_id": "000",
     "task": "pick_up_object",
@@ -835,7 +834,10 @@
           "contact_force": 0.0
         }
       ],
-      "deterministic_divergence": null
+      "deterministic_divergence": null,
+      "failure_observation_status": "observed",
+      "failure_segment_end": "transitioned",
+      "divergence_status": "uncomputed"
     },
     {
       "subtask": "align",
@@ -1659,7 +1661,10 @@
           "contact_force": 0.0
         }
       ],
-      "deterministic_divergence": null
+      "deterministic_divergence": null,
+      "failure_observation_status": "observed",
+      "failure_segment_end": "transitioned",
+      "divergence_status": "uncomputed"
     },
     {
       "subtask": "grasp",
@@ -3005,7 +3010,10 @@
           "contact_force": 2.4
         }
       ],
-      "deterministic_divergence": null
+      "deterministic_divergence": null,
+      "failure_observation_status": "observed",
+      "failure_segment_end": "transitioned",
+      "divergence_status": "uncomputed"
     },
     {
       "subtask": "lift",
@@ -3829,7 +3837,10 @@
           "contact_force": 2.4
         }
       ],
-      "deterministic_divergence": null
+      "deterministic_divergence": null,
+      "failure_observation_status": "observed",
+      "failure_segment_end": "trace_end",
+      "divergence_status": "uncomputed"
     }
   ]
 }

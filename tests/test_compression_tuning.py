@@ -9,6 +9,7 @@ import pytest
 from telemetry_reasoning.config import CompressionConfig
 from telemetry_reasoning.io import write_metadata_csv, write_telemetry_csv
 from telemetry_reasoning.parser import tuning
+from telemetry_reasoning.parser.compressor import build_paired_bt
 from telemetry_reasoning.schemas import (
     TASK_SUBTASKS, FailureMode, MetadataRow, RawTelemetryRow, Task,
 )
@@ -101,6 +102,75 @@ def test_repeat_order_and_labels_do_not_change_tuning(tmp_path, corpus):
     second = tuning.sweep_compression(changed_labels, tmp_path, config, reordered_manifest,
                                      k_grid=[5, 0, 2, 2], threshold_scales=[2, 1, 0.5, 1])
     assert json.dumps(first, sort_keys=True, allow_nan=False) == json.dumps(second, sort_keys=True, allow_nan=False)
+
+
+def test_complete_pair_candidates_preserve_explicit_observation_states(tmp_path, corpus):
+    metadata, manifest, config = corpus
+    report = tuning.sweep_compression(metadata, tmp_path, config, manifest,
+                                     k_grid=[0], threshold_scales=[1.0])
+    dev = next(row for row in metadata if row.pair_id == "dev")
+    base = build_paired_bt(dev, tmp_path, config)
+    # Recompression changes the observations, so previous comparison results
+    # cannot be carried into a tuning candidate.
+    values = base.model_dump()
+    for node in values["subtasks"]:
+        node.update(divergence_status="computed", deterministic_divergence={
+            "first_divergence_timestamp": None, "max_abs_deltas": {},
+        })
+    base = type(base).model_validate(values)
+    before = base.model_dump_json()
+    candidate = tuning._candidate_tree(base, _run(dev.task), _run(dev.task, failure=True), config)
+    assert base.model_dump_json() == before
+    assert all(node.failure_observation_status == "observed" for node in candidate.subtasks)
+    assert all(node.divergence_status == "uncomputed" for node in candidate.subtasks)
+    assert all(node.deterministic_divergence is None for node in candidate.subtasks)
+    assert [node.failure_segment_end for node in candidate.subtasks] == [
+        "transitioned", "transitioned", "trace_end",
+    ]
+    assert (report["candidates"][0]["summary"]["prompt_payload_sizes"]["paired_without_divergence"]["utf8_bytes"]
+            > report["candidates"][0]["summary"]["prompt_payload_sizes"]["failure_only"]["utf8_bytes"])
+
+
+@pytest.mark.parametrize("task,observed_stages", [
+    (Task.PICK_UP_OBJECT, 1), (Task.PICK_UP_OBJECT, 3),
+    (Task.TRANSPORT_OBJECT, 1), (Task.TRANSPORT_OBJECT, 2),
+])
+def test_partial_failure_candidates_preserve_schema_template_and_observation_states(tmp_path, task, observed_stages):
+    row = _metadata("partial", task)
+    success, failure = _run(task), _run(task, failure=True)[:11 * observed_stages - 4]
+    write_telemetry_csv(tmp_path / row.success_file, success)
+    write_telemetry_csv(tmp_path / row.failure_file, failure)
+    base_config = CompressionConfig(k_uniform_samples=5, major_event_thresholds={"gripper_force": 2.0})
+    candidate_config = CompressionConfig(k_uniform_samples=0, major_event_thresholds={"gripper_force": 2.0})
+    base = build_paired_bt(row, tmp_path, base_config)
+    before = base.model_dump_json()
+    candidate = tuning._candidate_tree(base, success, failure, candidate_config)
+    assert base.model_dump_json() == before
+    assert tuple(node.subtask for node in candidate.subtasks) == TASK_SUBTASKS[task]
+    for index, node in enumerate(candidate.subtasks):
+        assert node.metadata == base.subtasks[index].metadata
+        assert node.success_samples
+        assert node.failure_observation_status == ("observed" if index < observed_stages else "not_observed")
+        assert node.failure_segment_end == base.subtasks[index].failure_segment_end
+        assert node.divergence_status == ("uncomputed" if index < observed_stages else "not_comparable")
+        assert node.deterministic_divergence is None
+        assert bool(node.failure_samples) == (index < observed_stages)
+    manifest = {"pairs": {row.pair_id: {"split": "dev", "initial_condition_id": "partial"}}}
+    report = tuning.sweep_compression([row], tmp_path, base_config, manifest,
+                                     k_grid=[0], threshold_scales=[1.0])
+    totals = report["candidates"][0]["summary"]["totals"]
+    assert totals["raw_rows"] == len(success) + len(failure)
+    assert totals["observed_stages"] == len(TASK_SUBTASKS[task]) + observed_stages
+    assert totals["not_observed_stages"] == len(TASK_SUBTASKS[task]) - observed_stages
+    # A missing suffix supplies no fake errors and cannot prevent tuning from
+    # recommending a candidate that preserves the actual observations.
+    assert report["candidates"][0]["selection_checks"][0]["reconstruction_available"]
+    assert report["recommendation"] is not None
+    if observed_stages == 1:
+        events = totals["event_retention"]["gripper_force"]
+        assert events["raw_events"] == 0
+        assert events["event_retention_fraction"] is None
+    json.dumps(report, allow_nan=False)
 
 
 def test_only_explicit_train_or_dev_is_processed(tmp_path, corpus):

@@ -6,11 +6,11 @@ from math import cos, sin
 import pytest
 
 from telemetry_reasoning.config import CompressionConfig
-from telemetry_reasoning.parser.compressor import compress_rows
+from telemetry_reasoning.parser.compressor import build_bt_from_segments, compress_rows
 from telemetry_reasoning.parser.diagnostics import combine_diagnostics, compression_diagnostics
 from telemetry_reasoning.schemas import (
-    SUBTASK_METADATA, TASK_GOALS, TASK_SUBTASKS, FailureMode, MetadataRow,
-    PairedBehaviorTree, RawTelemetryRow, SubtaskBT, Task, TelemetryFeature,
+    TASK_SUBTASKS, FailureMode, MetadataRow,
+    RawTelemetryRow, Task, TelemetryFeature,
 )
 
 
@@ -42,19 +42,13 @@ def raw_pair(task=Task.PICK_UP_OBJECT, lengths=None, *, spike=False, joints=7):
 
 
 def tree_for(success, failure, config, task=Task.PICK_UP_OBJECT):
-    return PairedBehaviorTree(
-        metadata=MetadataRow(
+    return build_bt_from_segments(
+        MetadataRow(
             pair_id="opaque", task=task, success_file="success.csv", failure_file="failure.csv",
             failed_subtask=TASK_SUBTASKS[task][0], failure_mode=FailureMode.POSITION_ERROR,
             perturbation_param="private label", perturbation_value=1.0, seed=723,
         ),
-        overall_goal=TASK_GOALS[task],
-        subtasks=[SubtaskBT(
-            subtask=subtask, metadata=SUBTASK_METADATA[subtask].model_copy(deep=True),
-            success_samples=success_stage, failure_samples=failure_stage,
-        ) for subtask, success_stage, failure_stage in zip(
-            TASK_SUBTASKS[task], compress_rows(success, config), compress_rows(failure, config),
-        )],
+        compress_rows(success, config), compress_rows(failure, config),
     )
 
 
@@ -129,6 +123,83 @@ def test_short_stages_and_empty_event_denominators(task, lengths):
     assert report["totals"]["event_retention"]["ee_pos"]["neighbor_retention_fraction"] is None
     assert all(metric["max_abs_error"] == 0.0 for metric in report["totals"]["reconstruction_error"].values())
     json.dumps(report, allow_nan=False)
+
+
+@pytest.mark.parametrize("task,observed_stages", [
+    (Task.PICK_UP_OBJECT, 1), (Task.PICK_UP_OBJECT, 2), (Task.PICK_UP_OBJECT, 3),
+    (Task.TRANSPORT_OBJECT, 1), (Task.TRANSPORT_OBJECT, 2),
+])
+def test_partial_failure_reports_absent_stages_without_fabricated_measurements(task, observed_stages):
+    success, failure = raw_pair(task)
+    # The last observed stage stops after five of the success stage's nine rows.
+    failure = failure[:9 * observed_stages - 4]
+    config = CompressionConfig(k_uniform_samples=0, major_event_thresholds={"gripper_force": 2.0})
+    tree = tree_for(success, failure, config, task)
+    report = compression_diagnostics(success, failure, tree, config)
+    stages = report["runs"]["failure"]["stages"]
+    count = len(TASK_SUBTASKS[task])
+    assert [stage["subtask"] for stage in stages] == [stage.value for stage in TASK_SUBTASKS[task]]
+    assert [stage["observation_status"] for stage in stages] == (
+        ["observed"] * observed_stages + ["not_observed"] * (count - observed_stages)
+    )
+    assert report["totals"]["raw_rows"] == len(success) + len(failure)
+    assert report["totals"]["observed_stages"] == count + observed_stages
+    assert report["totals"]["not_observed_stages"] == count - observed_stages
+    assert report["runs"]["failure"]["observed_stages"] == observed_stages
+    for stage in stages[observed_stages:]:
+        assert stage["raw_rows"] == stage["retained_rows"] == 0
+        assert stage["retained_fraction"] is stage["compression_ratio"] is None
+        events = stage["event_retention"]["gripper_force"]
+        assert events["raw_events"] == events["retained_event_neighborhoods"] == 0
+        assert events["event_retention_fraction"] is None
+        for metric in stage["reconstruction_error"].values():
+            assert metric["max_abs_error"] is metric["mean_abs_error"] is None
+            assert metric["component_observations"] == metric["unavailable_stages"] == 0
+            assert metric["not_observed_stages"] == 1
+    force = report["totals"]["reconstruction_error"]["gripper_force"]
+    assert force["max_abs_error"] == force["mean_abs_error"] == 0.0
+    assert force["component_observations"] == len(success) + len(failure)
+    assert force["not_observed_stages"] == count - observed_stages
+    assert force["unavailable_stages"] == 0
+    combined = combine_diagnostics([report, report])
+    assert combined["totals"]["not_observed_stages"] == 2 * (count - observed_stages)
+    assert combined["totals"]["reconstruction_error"]["gripper_force"]["component_observations"] == 2 * (len(success) + len(failure))
+    assert combined["totals"]["reconstruction_error"]["gripper_force"]["mean_abs_error"] == 0.0
+    json.dumps(combined, allow_nan=False)
+
+
+def test_partial_stage_reconstruction_uses_its_own_observed_raw_endpoints():
+    success, failure = raw_pair()
+    failure = [row.model_copy(update={"ee_pos": [float(index * index), 0.0, 0.0]})
+               for index, row in enumerate(failure[:5])]
+    config = CompressionConfig(k_uniform_samples=0)
+    report = compression_diagnostics(success, failure, tree_for(success, failure, config), config)
+    metric = report["runs"]["failure"]["stages"][0]["reconstruction_error"]["ee_pos"]
+    # Endpoints 0 and 16 linearly reconstruct 0,4,8,12,16, while raw is 0,1,4,9,16.
+    assert metric["max_abs_error"] == 4.0
+    assert metric["mean_abs_error"] == pytest.approx(10 / 15)
+    assert metric["component_observations"] == 15
+    assert report["totals"]["reconstruction_error"]["ee_pos"]["max_abs_error"] == 4.0
+
+
+def test_diagnostics_rejects_retained_rows_for_unobserved_stage():
+    success, failure = raw_pair()
+    config = CompressionConfig(k_uniform_samples=0)
+    tree = tree_for(success, failure[:5], config)
+    tree.subtasks[1].failure_samples.append(failure[9])
+    with pytest.raises(ValueError, match="unobserved stage must have no retained samples"):
+        compression_diagnostics(success, failure[:5], tree, config)
+
+
+@pytest.mark.parametrize("indices", [[*range(9), *range(18, 27)], [*range(18), *range(9)]])
+def test_diagnostics_still_rejects_skipped_or_revisited_failure_stages(indices):
+    success, failure = raw_pair()
+    config = CompressionConfig(k_uniform_samples=0)
+    tree = tree_for(success, failure[:5], config)
+    invalid = [failure[index].model_copy(update={"timestamp": round(position * 0.02, 8)})
+               for position, index in enumerate(indices)]
+    with pytest.raises(ValueError, match="nonempty ordered prefix"):
+        compression_diagnostics(success, invalid, tree, config)
 
 
 def test_reconstruction_reuses_linear_previous_value_and_quaternion_semantics():

@@ -10,7 +10,7 @@ from telemetry_reasoning.config import CompressionConfig
 from telemetry_reasoning.io import read_telemetry_csv, validate_raw_run
 from telemetry_reasoning.schemas import (
     SUBTASK_METADATA, TASK_GOALS, TASK_SUBTASKS, MetadataRow, PairedBehaviorTree,
-    RawTelemetryRow, SubtaskBT,
+    RawTelemetryRow, SubtaskBT, validate_subtask_sequence,
 )
 
 
@@ -61,26 +61,53 @@ def build_paired_bt(
 ) -> PairedBehaviorTree:
     """Read a pair relative to data_dir and populate the task's shared template.
 
-    V1 requires each named subtask once, in template order, in both runs.
-    Alignment is structural; no temporal alignment or divergence is computed.
+    Successes require the complete template; failures may be a nonempty ordered
+    prefix. Every pair has explicit coverage states and empty failure sample
+    lists for any unobserved suffix. No temporal alignment or divergence is
+    computed.
     """
     data_dir = Path(data_dir)
     success = compress_csv(data_dir / metadata.success_file, config)
     failure = compress_csv(data_dir / metadata.failure_file, config)
+    return build_bt_from_segments(metadata, success, failure)
+
+
+def build_bt_from_segments(
+    metadata: MetadataRow, success: Sequence[Sequence[RawTelemetryRow]],
+    failure: Sequence[Sequence[RawTelemetryRow]],
+) -> PairedBehaviorTree:
+    """Build the canonical task structure from consecutive compressed segments.
+
+    Segment labels are checked before name-based matching so revisits cannot
+    silently overwrite observations. States describe observed coverage only;
+    terminal controller outcomes and recording integrity remain Track 2 checks.
+    Ground-truth injection fields never determine coverage or stage endings.
+    """
     expected = TASK_SUBTASKS[metadata.task]
     for name, segments in (("success", success), ("failure", failure)):
-        if tuple(segment[0].subtask for segment in segments) != expected:
-            raise ValueError(f"{name} run must contain the complete ordered task template")
+        if any(not segment for segment in segments):
+            raise ValueError(f"{name} subtask segments must each contain at least one observation")
+        validate_subtask_sequence(
+            [segment[0].subtask for segment in segments], metadata.task,
+            allow_partial=name == "failure", run_name=name,
+        )
+    success_by_subtask = {segment[0].subtask: list(segment) for segment in success}
+    failure_by_subtask = {segment[0].subtask: list(segment) for segment in failure}
+    nodes = []
+    for subtask in expected:
+        samples = failure_by_subtask.get(subtask, [])
+        nodes.append(SubtaskBT(
+            subtask=subtask,
+            metadata=SUBTASK_METADATA[subtask].model_copy(deep=True),
+            success_samples=success_by_subtask[subtask], failure_samples=samples,
+            failure_observation_status="observed" if samples else "not_observed",
+            failure_segment_end=(
+                "trace_end" if subtask == failure[-1][0].subtask else "transitioned"
+            ) if samples else None,
+            divergence_status="uncomputed" if samples else "not_comparable",
+        ))
     return PairedBehaviorTree(
         metadata=metadata,
         overall_goal=TASK_GOALS[metadata.task],
-        subtasks=[
-            SubtaskBT(
-                subtask=subtask,
-                metadata=SUBTASK_METADATA[subtask].model_copy(deep=True),
-                success_samples=success_rows,
-                failure_samples=failure_rows,
-            )
-            for subtask, success_rows, failure_rows in zip(expected, success, failure)
-        ],
+        subtasks=nodes,
     )
