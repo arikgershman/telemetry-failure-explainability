@@ -1,6 +1,11 @@
-# Track 5 Oct. 30: shared settings for all prompt variants.
+# Track 5 reference settings, shared by all prompt variants.
 # Model/tokenizer use the same immutable instruction-tuned checkpoint revision.
 # Stub execution neither loads this checkpoint nor requires optional packages.
+# Real loading has fixed memory admission checks: CPU >=48 GiB host RAM;
+# CUDA >=32 GiB host RAM and >=24 GiB free/total VRAM (40 GiB for float32).
+# These refusal thresholds are conservative prerequisites, not fit guarantees.
+# Unknown available RAM also refuses real loading. After loading, execution
+# checks reserve request KV memory plus workspace rather than checkpoint bytes.
 llm:
   model_id: meta-llama/Llama-3.1-8B-Instruct
   revision: 0e9e39f249a16976918f6564b8830bc894c89659
@@ -8,6 +13,8 @@ llm:
   dtype: bfloat16
   context_window_tokens: 65536
   max_new_tokens: 512
+  batch_size: 1
   seed: 723
   local_files_only: true
   quantization: none
+  quantization_group_size: 64

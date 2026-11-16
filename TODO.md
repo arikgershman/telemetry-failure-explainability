@@ -338,7 +338,7 @@ python scripts/plot_telemetry.py --data-dir data/sample --bt-dir data/processed/
 ### Target milestone dates
 
 - [x] **Oct. 30:** create the model adapter, mock inference backend, prompt views, and a compute/access smoke plan. Implemented in `src/telemetry_reasoning/models/llm.py`, `src/telemetry_reasoning/models/prompts.py`, `configs/llm.yaml`, the three prompt templates, and `scripts/run_llm.py`; see the [Track 5 handoff and smoke plan](src/telemetry_reasoning/models/README.md).
-- **Nov. 6:** run Baseline 2 (failure-only BT) and Baseline 3 (paired BT without divergence) with the same model/settings; finish output parsing and leakage tests.
+- [ ] **Nov. 6 — implementation and CPU verification complete; real-model acceptance pending:** run Baseline 2 (failure-only BT) and Baseline 3 (paired BT without divergence) with the same model/settings; finish output parsing and leakage tests. The 16 GB Mac became unresponsive during model loading and is now rejected before importing the model runtime. Real inference will resume on suitable lab compute; see the [incident review and handoff](src/telemetry_reasoning/models/README.md).
 - **Nov. 13:** run the main paired-BT-plus-divergence variant, deliver comparable four-variant evaluation inputs with Track 4, and validate the DPO/LoRA data formatter.
 
 Oct. 30 verification (CPU/offline; fresh output directory):
@@ -349,14 +349,18 @@ PYTHONPATH=src .venv/bin/python scripts/run_llm.py --bt-dir data/sample --config
 PYTHONPATH=src .venv/bin/python scripts/run_llm.py --config configs/llm.yaml --check-access
 ```
 
-The handoff documents a separate synthetic enriched fixture for testing all three variants without altering `data/sample/`. Stub predictions deliberately abstain and are explicitly marked synthetic in their run manifest; they are not HF results. The lazy HF adapter uses one pinned instruction-tuned model/tokenizer revision, single-request greedy decoding, and explicit context-budget rejection. Real-model execution, batching, optional quantization, and training-data formatting remain later Track 5 work.
+The handoff documents a separate synthetic enriched fixture for testing all three variants without altering `data/sample/`. Stub predictions deliberately abstain and are explicitly marked synthetic in their run manifest; they are not HF results. The Nov. 6 adapter adds batched greedy decoding, exact raw-response retention, independently verified output acceptance, explicit context-budget rejection, and memory admission checks. Real-model acceptance and training-data formatting remain pending their respective milestones.
+
+Nov. 6 safe local verification: **284 parser/Track 5 tests passed**, with network access disabled and imports of actual model runtimes blocked. A fresh two-baseline stub smoke produced two explicit abstentions and no errors in `runs/track5-nov06/safe-stub/`. `runs/track5-nov06/safe-local-preflight.json` records the actual 16 GiB host refusal without importing Torch or initializing a device. These are CPU contract checks; they do not satisfy real-HF acceptance. The full repository suite has one existing Track 4 failure concerning `excessive_speed`; Track 5 does not modify that evaluator.
 
 ### Files to create/modify
 
 - **Create:** `src/telemetry_reasoning/models/llm.py`, `src/telemetry_reasoning/models/prompts.py`, `src/telemetry_reasoning/models/training_data.py`.
 - **Create:** `configs/llm.yaml`, `configs/prompts/failure_only.txt`, `configs/prompts/paired_no_divergence.txt`, `configs/prompts/paired_with_divergence.txt`.
+- **Create:** `configs/llm-local.yaml` and `configs/llm-local.requirements.txt` to record the experimental Mac configuration and dependency versions; the profile is refused on the 16 GB laptop.
 - **Create:** `scripts/run_llm.py`, `scripts/prepare_dpo_data.py`.
 - **Create:** `tests/test_llm.py`, `tests/test_prompts.py`, `tests/test_training_data.py`.
+- **Create:** `tests/test_llm_cli.py` for atomic publication, raw-response provenance, real/stub acceptance, and resource-refusal checks.
 - Read/reuse the shared view methods and prediction contract. Do not modify `models/rule_based.py`, evaluator files, or shared schema/default configuration.
 
 ### Input & output contracts
@@ -368,10 +372,10 @@ The handoff documents a separate synthetic enriched fixture for testing all thre
 
 ### Definition of Done
 
-- [ ] Configure an exact Hugging Face Llama-3.1-8B checkpoint and revision, tokenizer, device/dtype, context budget, and optional supported quantization. Record whether the base or instruction-tuned checkpoint is used and use the same choice for all variants. Check access/compute early; provide a stub backend so CPU unit tests never download weights or require credentials.
-- [ ] Implement consistent tokenization, chat formatting where applicable, batched inference, seeded decoding, output limits, and validated structured predictions. Handle overlong prompts explicitly and consistently; do not silently truncate task stages or divergence evidence. Capture invalid outputs as errors without inventing labels.
-- [ ] Design the requested Chain-of-Thought-style prompts around examining task expectations, observable deviations, and plausible causes; request a final diagnosis with a concise evidence-grounded rationale and the shared JSON fields. Keep the instruction/output format and decoding settings fixed across variants so the experimental difference is available input information.
-- [ ] Test prompt payloads recursively: Baseline 2 contains no success/divergence; Baseline 3 contains success but no divergence; main contains both. No variant sees ground-truth metadata or identifies a cause from filenames/IDs. Verify null-divergence rejection, known fixture formatting, malformed model responses, and no mutation of storage objects.
+- [x] Configure an exact Hugging Face Llama-3.1-8B checkpoint and revision, tokenizer, device/dtype, context budget, and optional supported quantization. Record whether the base or instruction-tuned checkpoint is used and use the same choice for all variants. Check access/compute early; provide a stub backend so CPU unit tests never download weights or require credentials. Configuration and access are verified; successful full-model execution remains pending the acceptance item below.
+- [x] Implement consistent tokenization, chat formatting where applicable, batched inference, seeded decoding, output limits, and validated structured predictions. Handle overlong prompts explicitly and consistently; do not silently truncate task stages or divergence evidence. Capture invalid outputs as errors without inventing labels.
+- [x] Design the requested Chain-of-Thought-style prompts around examining task expectations, observable deviations, and plausible causes; request a final diagnosis with a concise evidence-grounded rationale and the shared JSON fields. Keep the instruction/output format and decoding settings fixed across variants so the experimental difference is available input information.
+- [x] Test prompt payloads recursively: Baseline 2 contains no success/divergence; Baseline 3 contains success but no divergence; main contains both. No variant sees ground-truth metadata or identifies a cause from filenames/IDs. Verify null-divergence rejection, known fixture formatting, malformed model responses, and no mutation of storage objects.
 - [ ] Demonstrate real HF inference for both prompt baselines by Nov. 6 and all three variants by Nov. 13; save reproducible run manifests and validated JSONL. Unit tests may use stubs, but real-inference acceptance cannot be satisfied by a stub. Describe causal evidence rather than attributing every later symptom to a separate injected fault.
 - [ ] Implement the training formatter with nonempty/different chosen/rejected validation, matching variant/pair IDs, reviewed-preference provenance, and initial-condition split preservation. Use identical input views for inference and future training. Emit a LoRA/DPO-ready dataset and configuration notes; leave optimizer/training runs and adapter tuning for Nov. 27.
 

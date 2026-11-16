@@ -1,0 +1,12 @@
+# Track 5 incident environment record, not an approved local execution profile.
+# macOS 26.5.2 / Apple M4 (16 GB), Python 3.13.3.
+# Full model loading made the laptop unresponsive and required a hard reboot.
+# Preserve these pins for audit; do not install or retry locally during recovery.
+# Matching these versions does not establish safe memory use or HF acceptance.
+torch==2.14.1
+transformers==5.23.0
+kernels==0.18.3
+accelerate==1.15.0
+huggingface-hub==2.4.0
+tokenizers==0.23.3
+safetensors==0.8.0

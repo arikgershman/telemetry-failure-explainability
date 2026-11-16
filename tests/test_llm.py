@@ -14,6 +14,7 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from pydantic import ValidationError
 
@@ -333,7 +334,7 @@ def test_cli_default_stub_publishes_separate_predictions_and_source_provenance(t
     before = {path.name: path.read_bytes() for path in inputs.iterdir()}
     assert run_llm.main(cli_args(inputs, output)) == 0
     assert "STUB" in capsys.readouterr().out
-    assert {path.name for path in output.iterdir()} == {"baseline_2.jsonl", "baseline_3.jsonl", "run_manifest.json"}
+    assert {path.name for path in output.iterdir()} == {"baseline_2.jsonl", "baseline_3.jsonl", "run_manifest.json", "completions.jsonl"}
     for variant in ("baseline_2", "baseline_3"):
         predictions = [json.loads(line) for line in (output / f"{variant}.jsonl").read_text().splitlines()]
         assert [record["pair_id"] for record in predictions] == ["a", "z"]
@@ -466,42 +467,67 @@ def test_custom_prompt_paths_resolve_relative_to_the_config(tmp_path):
     assert load_llm_config(path).prompt_dir == (tmp_path / "templates").resolve()
 
 
-def fake_hf_modules(monkeypatch, *, native_context=131072, chat_template="test chat template"):
-    """Minimal torch/transformers stand-ins that expose all adapter operations."""
+def fake_hf_modules(monkeypatch, *, native_context=131072, chat_template="test chat template",
+                    continuations=None, mps_available=False, metal_available=True,
+                    resolved_revision=llm.MODEL_REVISION, malformed_mask=False, kernel_source=None,
+                    cuda_available=False, cuda_memory=None, mps_allocator_available=True):
+    """Local tensor/runtime doubles; no weights, Hub calls, or torch imports."""
     calls = {
         "imports": [], "tokenizers": [], "models": [], "chat": [],
         "generate": [], "seeds": [], "devices": [], "decoded": [], "eval": 0,
+        "metal_configs": [], "kernel_loads": 0, "mps_fractions": [], "cuda_memory_queries": 0,
     }
 
+    monkeypatch.setattr(llm, "_host_resources", lambda: llm.ResourceSnapshot(64 * llm.GIB, "test_snapshot", 56 * llm.GIB))
+    monkeypatch.delenv("PYTORCH_MPS_HIGH_WATERMARK_RATIO", raising=False)
+
     class FakeTensor:
-        def __init__(self, tokens, *, vector=False):
-            self.tokens = tokens
-            self.shape = (len(tokens),) if vector else (1, len(tokens))
+        def __init__(self, tokens):
+            self.tokens = np.array(tokens, dtype=np.int64)
+            self.shape = self.tokens.shape
 
         def to(self, device):
             calls["devices"].append(device)
             return self
 
         def __getitem__(self, index):
-            assert isinstance(index, tuple) and index[0] == 0
-            return FakeTensor(self.tokens[index[1]], vector=True)
+            return FakeTensor(self.tokens[index])
+
+        def tolist(self):
+            return self.tokens.tolist()
 
     class FakeTokenizer:
         eos_token_id = 128001
+        eos_token = "<eos>"
+        pad_token = None
+        init_kwargs = {"_commit_hash": resolved_revision}
 
         def __init__(self):
             self.chat_template = chat_template
+            self.padding_side = "right"
 
-        def apply_chat_template(self, messages, **kwargs):
-            calls["chat"].append((messages, kwargs))
-            return FakeTensor([11, 12, 13])
+        @property
+        def pad_token_id(self):
+            return self.eos_token_id if self.pad_token else None
+
+        def apply_chat_template(self, conversations, **kwargs):
+            calls["chat"].append((conversations, kwargs))
+            assert self.padding_side == "left"
+            rows = [[11, 12, 13, 14, 15] if '"success_samples"' in messages[-1]["content"] else [11, 12, 13]
+                    for messages in conversations]
+            width = max(map(len, rows))
+            masks = [[0] * (width - len(row)) + [1] * len(row) for row in rows]
+            if malformed_mask:
+                masks[0] = [1, 0] + [1] * (width - 2)
+            ids = [[self.pad_token_id] * (width - len(row)) + row for row in rows]
+            return {"input_ids": FakeTensor(ids), "attention_mask": FakeTensor(masks)}
 
         def decode(self, tokens, **kwargs):
-            calls["decoded"].append((tokens.tokens, kwargs))
+            calls["decoded"].append((tokens, kwargs))
             return '{"generated": "continuation only"}'
 
     class FakeModel:
-        config = SimpleNamespace(max_position_embeddings=native_context)
+        config = SimpleNamespace(max_position_embeddings=native_context, _commit_hash=resolved_revision)
         generation_config = SimpleNamespace(eos_token_id=[128001, 128009])
 
         def to(self, device):
@@ -513,7 +539,11 @@ def fake_hf_modules(monkeypatch, *, native_context=131072, chat_template="test c
 
         def generate(self, **kwargs):
             calls["generate"].append(kwargs)
-            return FakeTensor([11, 12, 13, 21, 22])
+            ids = kwargs["input_ids"].tolist()
+            suffixes = continuations if continuations is not None else [[21, 22]] * len(ids)
+            width = max(map(len, suffixes))
+            return FakeTensor([prefix + suffix + [128001] * (width - len(suffix))
+                               for prefix, suffix in zip(ids, suffixes)])
 
     def tokenizer_loader(model_id, **kwargs):
         calls["tokenizers"].append((model_id, kwargs))
@@ -521,27 +551,49 @@ def fake_hf_modules(monkeypatch, *, native_context=131072, chat_template="test c
 
     def model_loader(model_id, **kwargs):
         calls["models"].append((model_id, kwargs))
-        return FakeModel()
+        model = FakeModel()
+        if "quantization_config" in kwargs:
+            model.hf_quantizer = SimpleNamespace(quantization_config=kwargs["quantization_config"])
+            model.hf_device_map = {"": "mps"}
+        return model
+
+    def metal_config(**kwargs):
+        calls["metal_configs"].append(kwargs)
+        return SimpleNamespace(**kwargs)
+
+    def metal_kernel():
+        calls["kernel_loads"] += 1
+        return SimpleNamespace(__file__=str(kernel_source or Path(__file__).resolve()), __name__="fake_metal_kernel")
+
+    def cuda_mem_get_info():
+        calls["cuda_memory_queries"] += 1
+        return cuda_memory if cuda_memory is not None else (32 * llm.GIB, 48 * llm.GIB)
 
     torch = SimpleNamespace(
-        cuda=SimpleNamespace(is_available=lambda: False),
-        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False)),
+        cuda=SimpleNamespace(is_available=lambda: cuda_available, mem_get_info=cuda_mem_get_info, is_bf16_supported=lambda: True),
+        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: mps_available)),
+        mps=SimpleNamespace(**({"set_per_process_memory_fraction": lambda fraction: calls["mps_fractions"].append(fraction)} if mps_allocator_available else {})),
         float32="fake-float32", float16="fake-float16", bfloat16="fake-bfloat16",
-        manual_seed=lambda seed: calls["seeds"].append(seed),
-        inference_mode=nullcontext,
-        ones_like=lambda tensor: FakeTensor([1] * tensor.shape[-1]),
+        manual_seed=lambda seed: calls["seeds"].append(seed), inference_mode=nullcontext,
     )
     transformers = SimpleNamespace(
         AutoTokenizer=SimpleNamespace(from_pretrained=tokenizer_loader),
         AutoModelForCausalLM=SimpleNamespace(from_pretrained=model_loader),
         GenerationConfig=lambda **kwargs: SimpleNamespace(**kwargs),
     )
+    if metal_available:
+        transformers.MetalConfig = metal_config
     original = llm.importlib.import_module
 
     def importer(name, *args, **kwargs):
-        if name in {"torch", "transformers"}:
+        fake_modules = {
+            "torch": torch, "transformers": transformers,
+            "kernels": SimpleNamespace(__version__="fake-kernels"),
+            "transformers.integrations.metal_quantization": SimpleNamespace(_get_metal_kernel=metal_kernel),
+        }
+        if name in fake_modules:
             calls["imports"].append(name)
-            return torch if name == "torch" else transformers
+            return fake_modules[name]
         return original(name, *args, **kwargs)
 
     monkeypatch.setattr(llm.importlib, "import_module", importer)
@@ -557,7 +609,7 @@ def test_hf_adapter_is_lazy_pinned_and_decodes_only_the_generated_continuation(t
     assert backend.count_tokens(prompt) == 3
     assert not calls["models"]
     result = backend.generate(prompt)
-    assert result == Generation('{"generated": "continuation only"}', 3, 2)
+    assert result == Generation('{"generated": "continuation only"}', 3, 2, finish_reason="unknown")
     assert calls["tokenizers"] == [(config.model_id, {
         "revision": config.revision, "local_files_only": True, "trust_remote_code": False,
     })]
@@ -565,9 +617,10 @@ def test_hf_adapter_is_lazy_pinned_and_decodes_only_the_generated_continuation(t
         "revision": config.revision, "local_files_only": True, "trust_remote_code": False,
         "torch_dtype": "fake-float32",
     })]
-    assert all(messages == prompt.messages for messages, _ in calls["chat"])
+    assert all(messages == [prompt.messages] for messages, _ in calls["chat"])
     assert all(options == {
-        "tokenize": True, "add_generation_prompt": True, "return_tensors": "pt", "truncation": False,
+        "tokenize": True, "add_generation_prompt": True, "return_tensors": "pt", "return_dict": True,
+        "padding": True, "truncation": False,
     } for _, options in calls["chat"])
     assert calls["decoded"] == [([21, 22], {"skip_special_tokens": True})]
     assert calls["seeds"] == [config.seed]
@@ -609,6 +662,7 @@ def test_hf_requires_the_checkpoint_chat_template(tree, monkeypatch):
 
 
 def test_hf_missing_optional_dependencies_has_actionable_error(tree, monkeypatch):
+    monkeypatch.setattr(llm, "_host_resources", lambda: llm.ResourceSnapshot(64 * llm.GIB, "test_snapshot", 56 * llm.GIB))
     original = llm.importlib.import_module
 
     def importer(name, *args, **kwargs):
@@ -636,5 +690,500 @@ def test_capability_check_reads_only_local_runtime_and_never_credentials_or_weig
     assert result["remote_access"] == "not_checked"
     assert result["weights"] == "not_loaded"
     assert "secret-token" not in json.dumps(result)
-    assert calls["imports"] == ["torch"]
+    assert calls["imports"] == []
+    assert result["resources"]["host_admissible"] is True
+    assert result["cuda_available"] is result["mps_available"] is None
     assert not calls["models"] and not calls["tokenizers"]
+
+
+def test_hf_batch_uses_left_padding_real_masks_and_eos_lengths(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch, continuations=[[21, 128009], [31, 32, 128001]])
+    config = LLMConfig(device="cpu", dtype="float32", batch_size=2, max_new_tokens=8)
+    backend = llm.HFBackend(config)
+    prompts = [build_prompt(tree, "baseline_2"), build_prompt(tree, "baseline_3")]
+    outputs = backend.generate_batch(prompts)
+    assert [row.input_tokens for row in outputs] == [3, 5]
+    assert [row.output_tokens for row in outputs] == [2, 3]
+    assert [row.finish_reason for row in outputs] == ["eos", "eos"]
+    assert len(calls["generate"]) == 1
+    generated = calls["generate"][0]
+    assert generated["input_ids"].tolist() == [[128001, 128001, 11, 12, 13], [11, 12, 13, 14, 15]]
+    assert generated["attention_mask"].tolist() == [[0, 0, 1, 1, 1], [1, 1, 1, 1, 1]]
+    assert calls["decoded"] == [([21, 128009], {"skip_special_tokens": True}),
+                                ([31, 32, 128001], {"skip_special_tokens": True})]
+    provenance = backend.provenance()
+    assert provenance["tokenizer"]["padding_side"] == "left"
+    assert provenance["model"]["resolved_revision"] == config.revision
+    assert provenance["tokenizer"]["resolved_revision"] == config.revision
+    assert provenance["native_context_window_tokens"] == 131072
+
+
+def test_hf_marks_completion_limit_without_inventing_an_eos(tree, monkeypatch):
+    fake_hf_modules(monkeypatch, continuations=[[21, 22]])
+    backend = llm.HFBackend(LLMConfig(device="cpu", dtype="float32", max_new_tokens=2))
+    output = backend.generate(build_prompt(tree, "baseline_2"))
+    assert output.output_tokens == 2 and output.finish_reason == "length"
+
+
+def test_hf_rejects_a_batch_containing_an_overlong_row_before_weights(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch)
+    backend = llm.HFBackend(LLMConfig(device="cpu", dtype="float32", batch_size=2,
+                                    context_window_tokens=10, max_new_tokens=6))
+    with pytest.raises(ValueError, match="context"):
+        backend.generate_batch([build_prompt(tree, "baseline_2"), build_prompt(tree, "baseline_3")])
+    assert not calls["models"] and not calls["generate"]
+
+
+def test_hf_rejects_right_padding_instead_of_using_wrong_attention(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch, malformed_mask=True)
+    with pytest.raises(ValueError, match="left padding"):
+        llm.HFBackend(LLMConfig(device="cpu", dtype="float32")).generate(build_prompt(tree, "baseline_2"))
+    assert not calls["models"]
+
+
+def test_hf_batch_size_is_an_explicit_limit(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch)
+    with pytest.raises(ValueError, match="batch_size"):
+        llm.HFBackend(LLMConfig(device="cpu", dtype="float32")).generate_batch([
+            build_prompt(tree, "baseline_2"), build_prompt(tree, "baseline_3"),
+        ])
+    assert not calls["tokenizers"] and not calls["models"]
+
+
+def test_hf_metal_loading_uses_quantized_direct_mps_placement_and_kernel_provenance(tree, monkeypatch, tmp_path):
+    calls = fake_hf_modules(monkeypatch, mps_available=True)
+    config = LLMConfig(device="mps", dtype="float16", quantization="metal4",
+                       local_files_only=False, cache_dir=tmp_path)
+    backend = llm.HFBackend(config)
+    backend.generate(build_prompt(tree, "baseline_2"))
+    assert calls["metal_configs"] == [{"bits": 4, "group_size": 64, "dequantize": False}]
+    assert calls["kernel_loads"] == 1
+    kwargs = calls["models"][0][1]
+    assert kwargs["device_map"] == "mps" and kwargs["local_files_only"] is False
+    assert kwargs["cache_dir"] == str(tmp_path)
+    assert calls["tokenizers"][0][1]["cache_dir"] == str(tmp_path)
+    assert kwargs["torch_dtype"] == "fake-float16"
+    # Only input_ids and attention_mask move; the model never gets a full .to().
+    assert calls["devices"] == ["mps", "mps"]
+    provenance = backend.provenance()
+    assert provenance["kernel"]["loaded"] is True
+    assert provenance["kernel"]["repository"] == llm.HFBackend.METAL_KERNEL_REPOSITORY
+    assert provenance["kernel"]["module_file_sha256"] == hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    assert provenance["effective_quantization"] == {"bits": 4, "group_size": 64, "dequantize": False}
+    assert provenance["device_map"] == {"": "mps"}
+
+
+def test_hf_metal_requires_explicit_runtime_support_before_weights(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch, mps_available=True, metal_available=False)
+    config = LLMConfig(device="mps", dtype="float16", quantization="metal4", local_files_only=False)
+    with pytest.raises(RuntimeError, match="MetalConfig"):
+        llm.HFBackend(config).generate(build_prompt(tree, "baseline_2"))
+    assert not calls["models"] and not calls["generate"]
+
+
+def test_metal_kernel_revision_comes_from_snapshot_path_before_symlink_resolution(tree, monkeypatch, tmp_path):
+    revision = "6ed0fc4eff016df00830678eb96acb92a6a8f351"
+    blob = tmp_path / "blobs" / "content-addressed-artifact"
+    blob.parent.mkdir()
+    blob.write_text("# synthetic kernel artifact\n")
+    snapshot = tmp_path / "kernels--test" / "snapshots" / revision / "build" / "torch214-metal" / "__init__.py"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.symlink_to(blob)
+    fake_hf_modules(monkeypatch, mps_available=True, kernel_source=snapshot)
+    config = LLMConfig(device="mps", dtype="float16", quantization="metal4", local_files_only=False,
+                       metal_kernel_revision=revision)
+    backend = llm.HFBackend(config)
+    backend.generate(build_prompt(tree, "baseline_2"))
+    kernel = backend.provenance()["kernel"]
+    assert kernel["resolved_revision"] == kernel["expected_revision"] == revision
+    assert kernel["module_file"] == str(snapshot)
+    assert kernel["module_resolved_file"] == str(blob)
+    assert kernel["module_file_sha256"] == hashlib.sha256(blob.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("identifiable", [True, False])
+def test_metal_kernel_revision_guard_refuses_drift_before_weights(tree, monkeypatch, tmp_path, identifiable):
+    expected = "6ed0fc4eff016df00830678eb96acb92a6a8f351"
+    actual = "1" * 40
+    source = tmp_path / "snapshots" / actual / "kernel.py" if identifiable else tmp_path / "kernel.py"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("# synthetic kernel\n")
+    calls = fake_hf_modules(monkeypatch, mps_available=True, kernel_source=source)
+    config = LLMConfig(device="mps", dtype="float16", quantization="metal4", local_files_only=False,
+                       metal_kernel_revision=expected)
+    backend = llm.HFBackend(config)
+    with pytest.raises(ValueError, match="kernel revision"):
+        backend.generate(build_prompt(tree, "baseline_2"))
+    assert not calls["models"] and not calls["generate"]
+    kernel = backend.provenance()["kernel"]
+    assert kernel["expected_revision"] == expected
+    assert kernel["resolved_revision"] == (actual if identifiable else None)
+
+
+@pytest.mark.parametrize("update", [
+    {"batch_size": 0}, {"batch_size": True}, {"batch_size": 129},
+    {"quantization": "metal4", "device": "cpu", "dtype": "float16", "local_files_only": False},
+    {"quantization": "metal4", "device": "mps", "dtype": "float32", "local_files_only": False},
+    {"quantization": "metal4", "device": "mps", "dtype": "float16", "local_files_only": True},
+    {"quantization_group_size": 128},
+    {"metal_kernel_revision": "main"}, {"metal_kernel_revision": "z" * 40},
+])
+def test_batch_and_metal_config_reject_unsupported_settings(update):
+    with pytest.raises(ValueError):
+        LLMConfig.model_validate(update)
+
+
+def test_local_profile_pins_the_same_checkpoint_and_resolves_repo_weight_cache():
+    config = load_llm_config(ROOT / "configs/llm-local.yaml")
+    assert config.model_id == LLMConfig().model_id and config.revision == LLMConfig().revision
+    assert config.device == "mps" and config.dtype == "float16" and config.quantization == "metal4"
+    assert config.context_window_tokens == 32768 and config.max_new_tokens == 1024
+    assert config.cache_dir == ROOT / "weights/hub"
+    assert config.local_files_only is False
+    assert config.metal_kernel_revision == "6ed0fc4eff016df00830678eb96acb92a6a8f351"
+
+
+def test_raw_completions_and_exact_prompts_are_retained_when_parsing_fails(tree):
+    raw = "  invalid JSON\nwith exact whitespace\t"
+    result = run_inference([tree], ["baseline_2"], LLMConfig(), backend=FakeBackend(text=raw))
+    completion, = result.completions
+    assert completion["text"] == raw and completion["status"] == "error"
+    assert completion["messages"] == build_prompt(tree, "baseline_2").messages
+    assert completion["completion_sha256"] == hashlib.sha256(raw.encode()).hexdigest()
+    assert completion["error_type"] == "JSONDecodeError"
+    assert result.manifest["requests"][0]["completion_sha256"] == completion["completion_sha256"]
+
+
+def test_harness_forms_real_batches_and_keeps_individual_errors_and_order(tree):
+    second = tree.model_copy(deep=True)
+    second.metadata.pair_id = "second"
+
+    class Batched(FakeBackend):
+        def __init__(self):
+            super().__init__()
+            self.batches = []
+
+        def generate(self, prompt):
+            pytest.fail("batch-capable backend used single-request generation")
+
+        def generate_batch(self, prompts):
+            self.batches.append(prompts)
+            if len(self.batches) == 1:
+                return [Generation(json.dumps(model_response(prompts[0])), 64, 32), ValueError("one sample failed")]
+            return [Generation(json.dumps(model_response(prompt)), 64, 32) for prompt in prompts]
+
+    backend = Batched()
+    result = run_inference([tree, second], ["baseline_2", "baseline_3"], LLMConfig(batch_size=2), backend=backend)
+    assert [len(batch) for batch in backend.batches] == [2, 2]
+    assert [row["pair_id"] for row in result.predictions] == ["000", "000", "second", "second"]
+    assert [row["status"] for row in result.predictions] == ["ok", "error", "ok", "ok"]
+    assert len(result.completions) == 3
+    assert result.manifest["decoding"]["batch_size"] == 2
+    assert len(result.manifest["batches"]) == 2
+    first, second_request = result.manifest["requests"][:2]
+    assert first["batch_latency_s"] == second_request["batch_latency_s"]
+    assert result.manifest["batches"][0]["latency_scope"] == "shared_batch_generation_wall_time"
+
+
+def test_harness_batch_exception_accounts_for_each_affected_row_and_continues(tree):
+    second = tree.model_copy(deep=True)
+    second.metadata.pair_id = "second"
+
+    class FailingBatch(FakeBackend):
+        calls = 0
+
+        def generate_batch(self, prompts):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("synthetic batch error")
+            return [Generation(json.dumps(model_response(prompt)), 64, 32) for prompt in prompts]
+
+    backend = FailingBatch()
+    result = run_inference([tree, second], ["baseline_2", "baseline_3"], LLMConfig(batch_size=2), backend=backend)
+    assert [row["status"] for row in result.predictions] == ["error", "error", "ok", "ok"]
+    assert len(result.completions) == 2 and backend.calls == 2
+
+
+def test_harness_excludes_overlong_rows_from_batches_without_dropping_them(tree):
+    class Budgeted(FakeBackend):
+        batches = []
+
+        def count_tokens(self, prompt):
+            return 1000 if prompt.variant == "baseline_3" else 64
+
+        def generate_batch(self, prompts):
+            self.batches.append(prompts)
+            return [Generation(json.dumps(model_response(prompt)), 64, 32) for prompt in prompts]
+
+    backend = Budgeted()
+    result = run_inference([tree], ["baseline_2", "baseline_3"],
+                           LLMConfig(context_window_tokens=800, batch_size=2), backend=backend)
+    assert [row["status"] for row in result.predictions] == ["ok", "error"]
+    assert len(backend.batches) == 1 and len(backend.batches[0]) == 1
+    assert result.manifest["requests"][1]["input_tokens"] == 1000
+    assert len(result.completions) == 1
+
+
+@pytest.mark.parametrize("field,value", [
+    ("input_tokens", float("nan")), ("input_tokens", True),
+    ("output_tokens", float("nan")), ("output_tokens", float("inf")),
+    ("output_tokens", object()), ("token_count_method", object()),
+    ("token_count_method", float("nan")), ("finish_reason", object()),
+    ("finish_reason", float("inf")),
+])
+def test_invalid_generation_metadata_preserves_raw_text_in_json_safe_error_records(tree, field, value):
+    raw = " exact raw response remains available\n"
+
+    class InvalidMetadata(FakeBackend):
+        def generate(self, prompt):
+            fields = {"text": raw, "input_tokens": 64, "output_tokens": 32,
+                      "token_count_method": "tokenizer", "finish_reason": None}
+            fields[field] = value
+            return Generation(**fields)
+
+    result = run_inference([tree], ["baseline_2"], LLMConfig(), backend=InvalidMetadata())
+    completion, = result.completions
+    assert result.predictions[0]["status"] == completion["status"] == "error"
+    assert completion["text"] == raw and completion["input_tokens"] == 64
+    assert field in completion["metadata_error_fields"]
+    assert "object at" not in json.dumps(completion, allow_nan=False)
+    json.dumps(result.manifest, allow_nan=False)
+
+
+@pytest.mark.parametrize("device,dtype,physical,available", [
+    ("mps", "float16", 16, 12),
+    ("cpu", "float32", 32, 28),
+    ("cuda", "bfloat16", 16, 12),
+    ("mps", "float16", None, 56),
+    ("mps", "float16", 64, None),
+    ("cpu", "float32", 64, 8),
+])
+def test_resource_guard_refuses_unsafe_or_unknown_ram_before_any_runtime_import(tree, monkeypatch, device, dtype, physical, available):
+    snapshot = llm.ResourceSnapshot(None if physical is None else physical * llm.GIB, "synthetic_os_snapshot",
+                                    None if available is None else available * llm.GIB)
+    monkeypatch.setattr(llm, "_host_resources", lambda: snapshot)
+    calls = []
+
+    def forbidden_import(name, *args, **kwargs):
+        calls.append(name)
+        pytest.fail("resource rejection must precede optional runtime imports")
+
+    monkeypatch.setattr(llm.importlib, "import_module", forbidden_import)
+    config = LLMConfig(device=device, dtype=dtype)
+    backend = llm.HFBackend(config)
+    prompt = build_prompt(tree, "baseline_2")
+    for invoke in (backend.count_tokens, backend.generate):
+        with pytest.raises(llm.ResourceSafetyError):
+            invoke(prompt)
+    assert calls == []
+    resources = backend.provenance()["resources"]
+    assert resources["host_admissible"] is False
+    assert resources["host_memory_bytes"] == snapshot.host_memory_bytes
+    assert resources["available_host_memory_bytes"] == snapshot.available_host_memory_bytes
+    assert backend.provenance()["weights_loaded"] is False
+
+
+def test_metal4_does_not_bypass_16_gib_host_floor_or_load_its_kernel(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch, mps_available=True)
+    monkeypatch.setattr(llm, "_host_resources", lambda: llm.ResourceSnapshot(16 * llm.GIB, "synthetic", 12 * llm.GIB))
+    config = LLMConfig(device="mps", dtype="float16", quantization="metal4", local_files_only=False)
+    result = run_inference([tree], ["baseline_2", "baseline_3"], config, backend=llm.HFBackend(config))
+    assert [row["status"] for row in result.predictions] == ["error", "error"]
+    assert all("ResourceSafetyError" in row["explanation"] for row in result.predictions)
+    assert result.completions == ()
+    assert calls["imports"] == calls["tokenizers"] == calls["models"] == []
+    assert calls["kernel_loads"] == 0 and calls["mps_fractions"] == []
+
+
+def test_available_headroom_is_rechecked_immediately_before_kernel_and_weights(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch, mps_available=True)
+    snapshots = iter([
+        llm.ResourceSnapshot(64 * llm.GIB, "before_tokenization", 56 * llm.GIB),
+        llm.ResourceSnapshot(64 * llm.GIB, "before_weights", 8 * llm.GIB),
+    ])
+    monkeypatch.setattr(llm, "_host_resources", lambda: next(snapshots))
+    config = LLMConfig(device="mps", dtype="float16", quantization="metal4", local_files_only=False)
+    backend = llm.HFBackend(config)
+    with pytest.raises(llm.ResourceSafetyError, match="headroom"):
+        backend.generate(build_prompt(tree, "baseline_2"))
+    assert len(calls["tokenizers"]) == 1
+    assert calls["kernel_loads"] == 0 and calls["models"] == []
+    assert backend.provenance()["resources"]["host_memory_source"] == "before_weights"
+
+
+def test_cached_runtime_cannot_reuse_a_stale_host_admission(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch)
+    backend = llm.HFBackend(LLMConfig(device="cpu", dtype="float32"))
+    prompt = build_prompt(tree, "baseline_2")
+    assert backend.count_tokens(prompt) == 3
+    monkeypatch.setattr(llm, "_host_resources", lambda: llm.ResourceSnapshot(64 * llm.GIB, "memory_changed", 4 * llm.GIB))
+    with pytest.raises(llm.ResourceSafetyError):
+        backend.count_tokens(prompt)
+    assert len(calls["chat"]) == 1 and not calls["models"]
+
+
+@pytest.mark.parametrize("watermark", ["0", "0.0", "-1", "nan", "inf", "invalid"])
+def test_disabled_or_invalid_mps_watermark_is_rejected_before_runtime(tree, monkeypatch, watermark):
+    calls = fake_hf_modules(monkeypatch, mps_available=True)
+    monkeypatch.setenv("PYTORCH_MPS_HIGH_WATERMARK_RATIO", watermark)
+    backend = llm.HFBackend(LLMConfig(device="mps", dtype="float16"))
+    with pytest.raises(llm.ResourceSafetyError):
+        backend.generate(build_prompt(tree, "baseline_2"))
+    assert calls["imports"] == [] and not calls["models"]
+
+
+@pytest.mark.parametrize("watermark,expected", [(None, 0.8), ("1.7", 0.8), ("0.5", 0.5)])
+def test_safe_mps_admission_applies_a_bounded_allocator_preserving_stricter_user_limits(tree, monkeypatch, watermark, expected):
+    calls = fake_hf_modules(monkeypatch, mps_available=True)
+    if watermark is not None:
+        monkeypatch.setenv("PYTORCH_MPS_HIGH_WATERMARK_RATIO", watermark)
+    backend = llm.HFBackend(LLMConfig(device="mps", dtype="float16"))
+    backend.generate(build_prompt(tree, "baseline_2"))
+    assert calls["mps_fractions"] == [expected, expected, expected]
+    resources = backend.provenance()["resources"]
+    assert resources["mps_allocator_cap_applied"] is True
+    assert resources["mps_allocator_fraction"] == expected
+
+
+def test_missing_mps_allocator_cap_is_a_refusal_before_tokenizer_or_weights(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch, mps_available=True, mps_allocator_available=False)
+    backend = llm.HFBackend(LLMConfig(device="mps", dtype="float16"))
+    with pytest.raises(llm.ResourceSafetyError, match="allocator cap"):
+        backend.generate(build_prompt(tree, "baseline_2"))
+    assert not calls["tokenizers"] and not calls["models"]
+
+
+@pytest.mark.parametrize("dtype,free,total", [
+    ("bfloat16", 12, 48), ("bfloat16", 48, 16), ("float32", 32, 48),
+])
+def test_cuda_requires_current_device_free_and_total_vram_before_tokenizer_or_weights(tree, monkeypatch, dtype, free, total):
+    calls = fake_hf_modules(monkeypatch, cuda_available=True,
+                            cuda_memory=(free * llm.GIB, total * llm.GIB))
+    backend = llm.HFBackend(LLMConfig(device="cuda", dtype=dtype))
+    with pytest.raises(llm.ResourceSafetyError, match="VRAM"):
+        backend.generate(build_prompt(tree, "baseline_2"))
+    assert calls["cuda_memory_queries"] == 1
+    assert not calls["tokenizers"] and not calls["models"]
+    resources = backend.provenance()["resources"]
+    assert resources["cuda_free_memory_bytes"] == free * llm.GIB
+
+
+def test_cuda_free_vram_is_rechecked_after_tokenization_before_weights(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch, cuda_available=True)
+    backend = llm.HFBackend(LLMConfig(device="cuda", dtype="bfloat16"))
+    prompt = build_prompt(tree, "baseline_2")
+    backend.count_tokens(prompt)
+    backend._torch.cuda.mem_get_info = lambda: (8 * llm.GIB, 48 * llm.GIB)
+    with pytest.raises(llm.ResourceSafetyError, match="VRAM"):
+        backend.generate(prompt)
+    assert calls["models"] == []
+
+
+def test_capabilities_never_imports_torch_and_reports_unsafe_host_admission(monkeypatch):
+    monkeypatch.setattr(llm, "_host_resources", lambda: llm.ResourceSnapshot(16 * llm.GIB, "synthetic", 8 * llm.GIB))
+    monkeypatch.setattr(llm.importlib, "import_module", lambda *args, **kwargs: pytest.fail("capability check imported a runtime"))
+    result = llm.capabilities(LLMConfig(device="mps", dtype="float16"))
+    assert result["resources"]["host_admissible"] is False
+    assert result["cuda_available"] is result["mps_available"] is None
+    assert result["weights"] == "not_loaded"
+
+
+def test_posix_resource_probe_uses_os_metadata_without_optional_runtime_imports(monkeypatch):
+    monkeypatch.setattr(llm.platform, "system", lambda: "Linux")
+    values = {"SC_PAGE_SIZE": 4096, "SC_PHYS_PAGES": 64 * llm.GIB // 4096,
+              "SC_AVPHYS_PAGES": 56 * llm.GIB // 4096}
+    monkeypatch.setattr(llm.os, "sysconf", values.__getitem__)
+    monkeypatch.setattr(llm, "_psutil_resources", lambda: llm.ResourceSnapshot(None, "psutil.unavailable"))
+    assert llm._host_resources() == llm.ResourceSnapshot(64 * llm.GIB, "os.sysconf(physical_and_available_pages)", 56 * llm.GIB)
+
+
+def test_unknown_os_ram_probe_fails_closed(monkeypatch):
+    monkeypatch.setattr(llm.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(llm, "_psutil_resources", lambda: llm.ResourceSnapshot(None, "psutil.unavailable"))
+
+    def unavailable(name):
+        raise OSError("synthetic unavailable sysconf")
+
+    monkeypatch.setattr(llm.os, "sysconf", unavailable)
+    snapshot = llm._host_resources()
+    assert snapshot.host_memory_bytes is None
+    assert llm._host_resource_assessment(LLMConfig(), snapshot)["host_admissible"] is False
+
+
+@pytest.mark.parametrize("field", ["allow_unsafe_memory", "minimum_host_gib", "disable_resource_guard"])
+def test_memory_policy_has_no_configuration_bypass(field):
+    with pytest.raises(ValueError):
+        LLMConfig.model_validate({field: True})
+
+
+def test_windows_resource_probe_uses_psutil_total_and_available_without_sysconf(monkeypatch):
+    monkeypatch.setattr(llm.platform, "system", lambda: "Windows")
+    measured = llm.ResourceSnapshot(64 * llm.GIB, "psutil.virtual_memory", 48 * llm.GIB)
+    monkeypatch.setattr(llm, "_psutil_resources", lambda: measured)
+
+    def missing_sysconf(name):
+        raise AttributeError("Windows has no sysconf")
+
+    monkeypatch.setattr(llm.os, "sysconf", missing_sysconf)
+    assert llm._host_resources() == measured
+    assert llm._host_resource_assessment(LLMConfig(), measured)["host_admissible"] is True
+
+
+def test_posix_prefers_reclaimable_available_memory_to_free_only_pages(monkeypatch):
+    monkeypatch.setattr(llm.platform, "system", lambda: "Linux")
+    measured = llm.ResourceSnapshot(64 * llm.GIB, "psutil.virtual_memory", 48 * llm.GIB)
+    monkeypatch.setattr(llm, "_psutil_resources", lambda: measured)
+    values = {"SC_PAGE_SIZE": 4096, "SC_PHYS_PAGES": 64 * llm.GIB // 4096,
+              "SC_AVPHYS_PAGES": 1 * llm.GIB // 4096}
+    monkeypatch.setattr(llm.os, "sysconf", values.__getitem__)
+    snapshot = llm._host_resources()
+    assert snapshot.available_host_memory_bytes == 48 * llm.GIB
+    assert snapshot.source == "os.sysconf; available:psutil.virtual_memory"
+    assert llm._host_resource_assessment(LLMConfig(), snapshot)["host_admissible"] is True
+
+
+@pytest.mark.parametrize("total,available", [(True, 32), (64, True), (-1, 32), (64, float("inf"))])
+def test_optional_psutil_measurements_require_positive_integer_bytes(monkeypatch, total, available):
+    fake = SimpleNamespace(virtual_memory=lambda: SimpleNamespace(total=total, available=available))
+    monkeypatch.setitem(sys.modules, "psutil", fake)
+    snapshot = llm._psutil_resources()
+    assert snapshot.host_memory_bytes == (total if type(total) is int and total > 0 else None)
+    assert snapshot.available_host_memory_bytes == (available if type(available) is int and available > 0 else None)
+
+
+def test_resident_cpu_model_does_not_reserve_checkpoint_loading_headroom_again(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch)
+    backend = llm.HFBackend(LLMConfig(device="cpu", dtype="float32", max_new_tokens=8))
+    backend.generate(build_prompt(tree, "baseline_2"))
+    # The fake resident weights consumed 32 GiB. This is below initial 36 GiB
+    # headroom but comfortably exceeds the next request's KV + workspace guard.
+    monkeypatch.setattr(llm, "_host_resources", lambda: llm.ResourceSnapshot(64 * llm.GIB, "resident_cpu", 24 * llm.GIB))
+    backend.generate(build_prompt(tree, "baseline_3"))
+    assert len(calls["models"]) == 1 and len(calls["generate"]) == 2
+    resources = backend.provenance()["resources"]
+    assert resources["phase"] == "resident_execution"
+    assert resources["minimum_available_host_memory_bytes_when_measurable"] < 24 * llm.GIB
+    assert resources["kv_cache_estimate_bytes"] > 0
+
+
+def test_resident_cuda_model_checks_request_kv_headroom_without_double_reserving_weights(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch, cuda_available=True, cuda_memory=(24 * llm.GIB, 24 * llm.GIB))
+    backend = llm.HFBackend(LLMConfig(device="cuda", dtype="bfloat16", max_new_tokens=8))
+    backend.generate(build_prompt(tree, "baseline_2"))
+    backend._torch.cuda.mem_get_info = lambda: (8 * llm.GIB, 24 * llm.GIB)
+    backend.generate(build_prompt(tree, "baseline_3"))
+    assert len(calls["models"]) == 1 and len(calls["generate"]) == 2
+    resources = backend.provenance()["resources"]
+    assert resources["phase"] == "resident_execution"
+    assert resources["minimum_cuda_memory_bytes"] < 8 * llm.GIB
+    assert resources["minimum_cuda_memory_bytes"] == 4 * llm.GIB + resources["kv_cache_estimate_bytes"]
+
+
+def test_resident_inference_still_refuses_insufficient_workspace(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch)
+    backend = llm.HFBackend(LLMConfig(device="cpu", dtype="float32"))
+    backend.generate(build_prompt(tree, "baseline_2"))
+    monkeypatch.setattr(llm, "_host_resources", lambda: llm.ResourceSnapshot(64 * llm.GIB, "resident_exhausted", 3 * llm.GIB))
+    with pytest.raises(llm.ResourceSafetyError, match="headroom"):
+        backend.generate(build_prompt(tree, "baseline_3"))
+    assert len(calls["generate"]) == 1

@@ -10,8 +10,10 @@ Local access/compute inspection, without downloading or opening model weights::
 
     python scripts/run_llm.py --check-access
 
-The output directory contains one ``<variant>.jsonl`` per requested variant
-and ``run_manifest.json``. Exit codes: 0 for success/abstention, 1 if any
+The output directory contains one ``<variant>.jsonl`` per requested variant,
+``completions.jsonl`` with exact generated text and parsing outcomes, and
+``run_manifest.json`` with an explicit hashed artifact inventory. Exit codes:
+0 for success/abstention, 1 if any
 prediction has error status, and 2 for configuration, input, or setup errors.
 """
 
@@ -34,8 +36,10 @@ from telemetry_reasoning.models.llm import (
     StubBackend,
     capabilities,
     load_llm_config,
+    parse_response,
     run_inference,
 )
+from telemetry_reasoning.models.prompts import DEFAULT_TEMPLATE_DIR, TEMPLATE_FILENAMES, build_prompt
 from telemetry_reasoning.schemas import PairedBehaviorTree
 
 
@@ -100,24 +104,139 @@ def _validate_output(output_dir: Path) -> None:
         raise ValueError("--output-dir must be absent or empty; choose a fresh directory")
 
 
+def _file_provenance(path: Path) -> dict[str, Any]:
+    data = path.read_bytes()
+    return {"path": str(path.resolve()), "sha256": hashlib.sha256(data).hexdigest(),
+            "size_bytes": len(data)}
+
+
+def implementation_provenance(prompt_dir: Path | None) -> dict[str, Any]:
+    """Hash the adapter and the exact templates, including custom directories.
+
+    Shared schema/evidence validation sources are read for reproducibility;
+    ownership of those files remains with their respective tracks.
+    """
+    sources = (
+        Path(__file__).resolve(),
+        ROOT / "src/telemetry_reasoning/models/llm.py",
+        ROOT / "src/telemetry_reasoning/models/prompts.py",
+        ROOT / "src/telemetry_reasoning/schemas.py",
+        ROOT / "src/telemetry_reasoning/eval/contracts.py",
+    )
+    directory = prompt_dir or DEFAULT_TEMPLATE_DIR
+    return {
+        "source_files": [_file_provenance(path) for path in sources],
+        "prompt_template_files": [
+            {"model_variant": variant.value, **_file_provenance(directory / filename)}
+            for variant, filename in TEMPLATE_FILENAMES.items()
+        ],
+    }
+
+
+def execution_summary(
+    *, selected_backend: str, trees: Sequence[PairedBehaviorTree], variants: Sequence[str],
+    predictions: Sequence[dict[str, Any]], completions: Sequence[dict[str, Any]],
+    manifest: dict[str, Any],
+    prompt_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Distinguish selecting HF, generating text, and passing a smoke run.
+
+    Rebuild prompts and independently parse saved text for every pair/variant.
+    Claimed status or loaded weights alone cannot establish success. This
+    demonstrates the inference contract, not diagnosis accuracy or human review.
+    Stub predictions can never satisfy real-model acceptance.
+    """
+    expected = {(tree.metadata.pair_id, variant) for tree in trees for variant in variants}
+    predicted = {(record["pair_id"], record["model_variant"]): record for record in predictions}
+    generated = {(record["pair_id"], record["model_variant"]): record for record in completions}
+    valid = set()
+    for tree in trees:
+        for variant in variants:
+            key = (tree.metadata.pair_id, variant)
+            try:
+                record, completion = predicted[key], generated[key]
+                if record["status"] not in ("ok", "abstain"):
+                    continue
+                if not (completion["status"] == record["status"] and
+                        record["backend"] == selected_backend == completion["backend"]):
+                    continue
+                prompt = build_prompt(tree, variant, template_dir=prompt_dir)
+                if (completion["messages"] != prompt.messages or
+                        completion["prompt_sha256"] != prompt.prompt_sha256 or
+                        not isinstance(completion["text"], str) or
+                        completion["completion_sha256"] != hashlib.sha256(
+                            completion["text"].encode("utf-8")).hexdigest()):
+                    continue
+                reparsed = parse_response(completion["text"], prompt, tree.metadata.pair_id, selected_backend)
+                if reparsed == record:
+                    valid.add(key)
+            except (KeyError, TypeError, ValueError, OSError):
+                # Preserve the original artifacts for review. Acceptance must
+                # never repair a response or infer missing identity/provenance.
+                continue
+    coverage = (set(predicted) == expected and set(generated) == expected
+                and len(predictions) == len(completions) == len(expected) and valid == expected)
+    weights_loaded = manifest.get("backend_provenance", {}).get("weights_loaded") is True
+    real_generation = (selected_backend == "hf" and weights_loaded and
+                       any(record.get("backend") == "hf" for record in completions))
+    passed = real_generation and coverage
+    status = "synthetic" if selected_backend == "stub" else ("passed" if passed else "incomplete")
+    return {
+        "execution": {
+            "selected_backend": selected_backend,
+            "hf_weights_loaded": selected_backend == "hf" and weights_loaded,
+            "hf_generation_completed": real_generation,
+            "expected_requests": len(expected),
+            "generated_requests": len(completions),
+            "validated_requests": len(valid),
+            "all_requests_validated": coverage,
+        },
+        "acceptance": {
+            "scope": "inference_smoke",
+            "status": status,
+            "nov6_baselines_covered": passed and {"baseline_2", "baseline_3"}.issubset(variants),
+            "note": ("Synthetic plumbing only; this run cannot establish real-model acceptance."
+                     if selected_backend == "stub" else
+                     "Smoke acceptance requires successful HF generation and validated outputs for every request; "
+                     "it does not establish diagnosis accuracy or human review."),
+        },
+    }
+
+
+def _write_jsonl(path: Path, records: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    with path.open("w", encoding="utf-8", newline="\n") as stream:
+        for record in records:
+            stream.write(json.dumps(record, allow_nan=False, ensure_ascii=False) + "\n")
+    return {"path": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "size_bytes": path.stat().st_size, "n_records": len(records)}
+
+
 def publish_run(
     output_dir: Path, predictions: Sequence[dict[str, Any]],
     variants: Sequence[str], manifest: dict[str, Any],
+    *, completions: Sequence[dict[str, Any]] = (),
 ) -> None:
-    """Stage all files, then publish the run as one directory rename."""
+    """Stage predictions, raw completions, and their manifest before publication."""
+    for record in completions:
+        if (not isinstance(record.get("text"), str) or record.get("completion_sha256") !=
+                hashlib.sha256(record["text"].encode("utf-8")).hexdigest()):
+            raise ValueError("completion text/hash mismatch; refusing to publish unverifiable output")
     _validate_output(output_dir)
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix=".llm-", dir=output_dir.parent) as temporary:
         staged = Path(temporary) / "run"
         staged.mkdir()
+        artifacts = []
         for variant in variants:
-            path = staged / f"{variant}.jsonl"
-            with path.open("w", encoding="utf-8", newline="\n") as stream:
-                for record in predictions:
-                    if record["model_variant"] == variant:
-                        stream.write(json.dumps(record, allow_nan=False, ensure_ascii=False) + "\n")
+            selected = [record for record in predictions if record["model_variant"] == variant]
+            artifacts.append({
+                "kind": "predictions", "model_variant": variant,
+                **_write_jsonl(staged / f"{variant}.jsonl", selected),
+            })
+        artifacts.append({"kind": "completions", **_write_jsonl(staged / "completions.jsonl", completions)})
+        published_manifest = {**manifest, "artifacts": artifacts, "manifest_file": "run_manifest.json"}
         (staged / "run_manifest.json").write_text(
-            json.dumps(manifest, indent=2, allow_nan=False, ensure_ascii=False) + "\n",
+            json.dumps(published_manifest, indent=2, allow_nan=False, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
         # A second check protects against a writer populating the target while
@@ -152,6 +271,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ValueError("--variants must be unique")
         _validate_output(args.output_dir)
         trees, input_files = load_inputs(args.bt_dir)
+        implementation = implementation_provenance(config.prompt_dir)
         backend = StubBackend(config) if args.backend == "stub" else HFBackend(config)
         result = run_inference(trees, args.variants, config, backend=backend)
         manifest = dict(result.manifest)
@@ -162,8 +282,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             "config_path": str(args.config.resolve()),
             "config_file_sha256": hashlib.sha256(config_bytes).hexdigest(),
             "prediction_files": {variant: f"{variant}.jsonl" for variant in args.variants},
+            "completion_file": "completions.jsonl",
+            **implementation,
         })
-        publish_run(args.output_dir, result.predictions, args.variants, manifest)
+        manifest.update(execution_summary(
+            selected_backend=args.backend, trees=trees, variants=args.variants,
+            predictions=result.predictions, completions=result.completions, manifest=manifest,
+            prompt_dir=config.prompt_dir,
+        ))
+        publish_run(args.output_dir, result.predictions, args.variants, manifest,
+                    completions=result.completions)
     except (OSError, ValueError, TypeError, RuntimeError, ImportError, yaml.YAMLError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -176,6 +304,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"(ok={counts['ok']}, abstain={counts['abstain']}, error={counts['error']})"
     )
     print(f"run manifest: {args.output_dir / 'run_manifest.json'}")
+    print(f"inference smoke: {manifest['acceptance']['status']}")
     return 1 if counts["error"] else 0
 
 

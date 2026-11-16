@@ -1,12 +1,70 @@
-# Track 5 LLM harness and compute/access smoke plan
+# Track 5 LLM harness, prompt baselines, and inference verification
 
-Track 5's Oct. 30 foundation provides one model adapter, an offline stub,
-controlled prompt views, and a repeatable route to a real inference smoke test.
+Track 5 provides one model adapter, an offline stub, and controlled prompt
+views. The Nov. 6 extension supports batched HF inference, records raw model
+completions, validates structured predictions against observed telemetry, and
+adds experimental Metal quantization support. The attempted full model load on
+the local 16 GB Apple M4 made the laptop unresponsive and required a hard
+reboot. That machine is unsupported for automatic full-model loading. Real HF
+acceptance for Baselines 2 and 3 remains incomplete and now requires suitable
+external compute; no local full-model retry is authorized.
+
 The stub checks orchestration and contracts; it does not diagnose failures or
-establish LLM accuracy. Real Baseline 2/3 runs remain a Nov. 6 acceptance step,
-and a real main-model run remains a Nov. 13 acceptance step. The training-data
-formatter, preference collection, LoRA/DPO training, and other tracks' simulation,
-parser, and evaluation implementations are outside this Oct. 30 change.
+establish LLM accuracy. A real main-model run, training-data formatting,
+preference collection, and LoRA/DPO training remain later Track 5 work.
+Simulation, parser, dataset validation, and evaluation implementations remain
+with their owning tracks.
+
+## Local model-load incident
+
+The failed command was the following. It is recorded for audit and must not be
+rerun on the 16 GB laptop:
+
+```text
+PYTHONPATH=src HF_HUB_CACHE=weights/hub .venv/bin/python -u scripts/run_llm.py --bt-dir data/sample --config configs/llm-local.yaml --variants baseline_2 baseline_3 --backend hf --output-dir runs/track5-nov06/local-hf
+```
+
+The last captured output showed weight loading at approximately **87%
+(253/291)** before the process stalled. The user reported that the laptop
+became unresponsive and required a hard reboot. No completed result directory
+exists at `runs/track5-nov06/local-hf`; there are no accepted prediction files
+or completed run manifest for that attempt. The CLI publishes output only
+after inference returns, so the absent directory establishes that publication
+did not finish, not an exact internal failure point.
+
+The later process audit found no matching inference task still running. An
+after-reboot swap check showed zero current swap usage, and the available
+read-only diagnostic files did not establish a relevant panic or confirmed
+out-of-memory termination. Those later observations cannot reconstruct memory
+pressure before the reboot.
+
+The observed load stage and the 16 GB unified-memory limit make memory pressure
+during model loading and on-the-fly quantization a plausible cause. Loading can
+temporarily retain original tensors, converted tensors, and working buffers;
+the final 4-bit weight size does not bound that peak. A later long-prompt
+prefill would also require substantial memory, but the captured output does
+not establish that prefill began. No OS report confirming the cause,
+memory-pressure trace, or confirmed peak allocation was captured, so this is
+an inference rather than a diagnosed OS failure.
+
+Downloading the original checkpoint placed approximately **16 GB on disk** in
+`weights/hub`. A cache file's disk size is different from a running process's
+RAM/GPU allocation. The heavy step was the later `--backend hf` command, which
+called `AutoModelForCausalLM.from_pretrained()` with MPS placement and runtime
+Metal quantization. The cache download, package installation, isolated kernel
+probe, and tokenizer checks did not prove that this full load would fit.
+The readiness assessment was incomplete: it allowed full-model loading after
+kernel/token checks without first establishing sufficient peak unified-memory
+headroom. The local profile should not have been treated as ready to execute.
+
+The earlier local profile was an unverified experiment. Successful tokenization
+and kernel compatibility must not be presented as evidence that full-model
+inference is viable on this laptop. Preserve the existing configuration,
+dependency pins, and cache for audit without reloading the model. Current work
+is limited to source/documentation inspection and CPU/offline validation that
+does not import Torch, access the GPU, download files, or run model inference.
+The Nov. 6 real-HF milestone remains open until both baselines complete and
+validate on appropriate external compute using identical settings.
 
 ## Model identity and reproducibility
 
@@ -20,9 +78,9 @@ defines a new experiment and needs a new output directory.
 
 Meta documents a 128k context and BF16 inference in the
 [official model card](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct).
-The harness caps smoke tests at 65,536 total tokens, deliberately below that
-model limit. That budget includes the chat template, complete telemetry payload,
-and reserved output tokens. Count the actual model tokenizer's tokens before
+The reference configuration caps smoke tests at 65,536 total tokens,
+deliberately below that model limit. That budget includes the chat template,
+complete telemetry payload, and reserved output tokens. Count the actual model tokenizer's tokens before
 generation; reject an oversized request instead of silently dropping stages or
 evidence. A stub's approximate counts cannot establish that an HF prompt fits.
 
@@ -31,7 +89,9 @@ a 512-token output allowance, and seed 723. The model and tokenizer share the
 configured revision. `local_files_only: true` prevents an HF run from fetching
 uncached files; make a separately named experiment configuration with that flag
 set to `false` when intentionally retrieving the gated checkpoint. Quantization
-is disabled; batching and quantization extensions remain later work.
+is disabled in this reference configuration. The historical Metal
+4-bit configuration below uses the same pinned original checkpoint and
+tokenizer; its attempted full load failed on the 16 GB laptop.
 
 The tokenizer's own chat template supplies special tokens and the assistant
 generation prefix; see the
@@ -52,15 +112,56 @@ remains unavailable: a null divergence for an unobserved stage is permissible,
 while null divergence for an observed stage rejects main-model input. Null
 never means zero.
 
+## Inference and output contracts
+
+`LLMConfig` and `load_llm_config()` belong to Track 5; configuration stays under
+the separate `llm:` YAML mapping. Paths such as `cache_dir` and `prompt_dir`
+resolve relative to that YAML file. The same model, tokenizer revision, prompt
+instructions, decoding settings, precision, quantization, and seed apply to
+every variant in a run.
+
+`batch_size` controls HF throughput without changing the allowed telemetry.
+The adapter uses decoder-only left padding with explicit attention masks,
+counts each unpadded input separately, and removes generated padding after the
+first EOS. An overlong input becomes an error before generation; it is never
+silently truncated or replaced by an incomplete task. Start with batch size 1
+on memory-constrained hardware, then use a separately recorded configuration
+to increase it. A batch execution failure remains an explicit failure for its
+requests rather than silently retrying a different batch composition.
+
+The model supplies exactly `predicted_failure_mode`, `predicted_subtask`,
+`explanation`, `evidence`, and `status`. The adapter supplies the trusted join
+fields `pair_id`, `model_variant`, and `backend`. It rejects malformed JSON,
+duplicate/extra keys, invalid enum values, unavailable-stage predictions,
+nonfinite/wrong-shape evidence, and citations that do not match a supplied
+failure sample's timestamp and numeric value. A claimed `ok` prediction needs
+both labels and supporting evidence. Abstentions retain null labels; errors
+retain null labels and empty evidence. No response repair invents a diagnosis.
+
+The CLI writes a fresh output directory containing:
+
+- `<variant>.jsonl`: one validated prediction or explicit error per pair/variant.
+- `completions.jsonl`: exact returned model text with parsing outcome, token
+  counts, and a completion hash, including text rejected by validation.
+- `run_manifest.json`: input/config/prompt/source hashes, requested and resolved
+  model/tokenizer revisions, runtime/package/device/quantization provenance,
+  per-request timing/counts, and separate execution and acceptance summaries.
+
+Exit codes are 0 for a completed run of diagnoses/abstentions, 1 when any
+prediction is an error, and 2 for configuration, input, or publication errors.
+Selecting `--backend hf` alone does not establish real-model acceptance. A
+passing inference smoke requires real generation and validated results for
+every requested pair/variant; it does not establish diagnostic accuracy.
+
 ## Offline CPU smoke
 
-Use the existing project environment from the repository root. Installing the
-base package is sufficient; this path does not need the `llm` extra, a Hugging
-Face account, network access, or model weights.
+Use the existing project environment from the repository root. This path does
+not need the `llm` extra, a Hugging Face account, network access, or model
+weights. During safe recovery work, use installed packages without installing
+or updating dependencies.
 
 ```bash
-python -m pip install -e .
-python -m pytest tests/test_prompts.py tests/test_llm.py
+PYTHONPATH=src .venv/bin/python -m pytest tests/test_prompts.py tests/test_llm.py
 ```
 
 Run the two baselines directly against a copy of the checked-in fixture in a
@@ -134,111 +235,146 @@ The synthetic 5.10 s / 12 N value is a contract fixture, not a measured output
 of a production divergence function. Do not report its predictions or metrics
 as evidence that Llama identified the grasp event.
 
-## Access and compute preflight
+## Safe local workflow and compute gates
 
-The selected repository is gated. Request access through the
-[official checkpoint page](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct)
-using the account that will run inference; the public API currently reports
-manual approval. After approval, authenticate locally using `hf auth login` or
-provide a read token through `HF_TOKEN`, as described in the
-[Hugging Face gated-model guide](https://huggingface.co/docs/hub/models-gated).
-Do not put tokens in YAML, source, shell command arguments, or saved manifests.
-Reading public metadata does not prove permission to download gated files.
+The current authorized work is source/documentation review and CPU/offline
+validation only. Do not install packages, download more files, import Torch,
+query or initialize the GPU, retry model loading, or provision external compute.
+Use the existing environment and the stub. A passing offline test suite remains
+separate from real-HF acceptance.
 
-Before reserving model compute:
+The resource preflight runs before optional model runtime imports or model
+loading. It reads physical host memory and the selected configuration without
+importing Torch. The policy blocks the 16 GB laptop. The conservative minimums
+for any future approved execution environment are:
 
-1. Inspect local readiness with
-   `python scripts/run_llm.py --config configs/llm.yaml --check-access`. This
-   check reports installed libraries and the configured device without loading
-   weights, reading credentials, or contacting Hugging Face. Its success does
-   not establish gated repository access.
-2. Install the optional environment with `python -m pip install -e '.[llm]'`.
-   Check that Transformers supports Llama 3.1 (Meta's minimum is 4.43.0), and
-   record the actual installed package versions in the run provenance. The
-   repository's broad optional dependency minimum alone is not that check.
-3. Confirm access to the pinned revision's `config.json` and tokenizer using
-   the approved account. These are small downloads. Only the later inference
-   run should load weights. Use the same SHA for every download; the
-   [Hub download guide](https://huggingface.co/docs/huggingface_hub/en/guides/download)
-   documents commit-pinned downloads and cache reuse.
-4. Reserve a device and sufficient free disk/cache space. An 8-billion-parameter
-   model requires approximately 16 GB of BF16/FP16 weights or 32 GB of FP32
-   weights before runtime overhead. These are planning estimates from parameter
-   count and bytes per element, not measured memory requirements. KV cache,
-   activations, tokenizer inputs, and library allocations add memory; longer
-   prompts and larger batches increase the requirement. Start at batch size 1.
-5. A CUDA GPU with at least 24 GB free memory is a practical initial BF16 smoke
-   target, subject to the actual prompt budget and measured peak allocation.
-   BF16 requires device support. Explicit CPU/FP32 inference is possible with
-   substantial RAM and potentially long runtime; it is a real model run and
-   is distinct from the weight-free CPU stub. Do not assume this workstation
-   has a suitable accelerator or that automatic placement guarantees a fit.
-6. Keep quantization disabled for the reference experiment unless a supported
-   quantized configuration has been deliberately selected and verified on the
-   target hardware. Any later quantization choice must be identical across
-   variants and recorded in provenance. See the official
-   [Transformers bitsandbytes guide](https://huggingface.co/docs/transformers/en/quantization/bitsandbytes)
-   before adding that optional path; installing bitsandbytes alone does not
-   establish hardware compatibility.
+| Execution target | Minimum physical host RAM | Minimum currently available host RAM | Additional requirement |
+| --- | --- | --- | --- |
+| MPS / Apple Silicon | 32 GiB | 24 GiB | Matching supported runtime/kernel and a bounded allocator |
+| CPU | 48 GiB | 36 GiB | Separate review of dtype, loading peaks, and prompt workload |
+| CUDA | 32 GiB | 24 GiB | At least 24 GiB free and total GPU memory for FP16/BF16; 40 GiB for FP32 |
 
-No approved-account access check, weight download, GPU allocation, or real
-generation is claimed by the Oct. 30 offline smoke. Keep an explicit record of
-access failure, insufficient memory, or missing dependencies instead of
-substituting stub output for HF output.
+The table describes initial weight-loading admission. After weights are
+resident, the adapter checks a separate workspace reserve and an estimate of
+the requested batch's KV cache, rather than reserving the loading budget a
+second time. These are screening estimates, not measured peak-memory bounds.
 
-An optional small-file access probe, run only after authentication, is:
+These thresholds are admission policy, not measured fit guarantees. A matching
+kernel, an available device, a token count below the context limit, or a final
+4-bit weight estimate does not establish peak load or inference memory safety.
+The resource check must fail before importing Torch on an undersized host;
+there is no automatic fallback to CPU, a smaller precision, a shorter prompt,
+or a different batch composition. The local profile is diagnostic only on this
+laptop.
+
+Unknown physical or available RAM fails closed. Host admission is checked again
+immediately before loading because other processes can change available
+memory. Future authorized CUDA execution also checks actual free/total VRAM
+before loading; it does not infer capacity from the GPU name. On an admitted
+MPS host, the adapter requires a runtime allocator cap with fraction at most
+0.8 and rejects disabled or invalid allocator-limit overrides. These guards
+must not be bypassed to retry the 16 GB laptop.
+
+`--check-access` now reports package/config and host-resource information
+without loading a model, importing Torch, initializing a device, contacting
+the Hub, or proving gated access. Its successful command exit does not mean
+that model execution is permitted. Inspect `resources.host_admissible` and
+`resources.reason`; the current laptop must report refusal. Device availability
+remains unknown (`null`) with `device_probe` explicitly marked unperformed.
 
 ```bash
-python - <<'PY'
-from huggingface_hub import hf_hub_download
-from telemetry_reasoning.models.llm import load_llm_config
-
-config = load_llm_config("configs/llm.yaml")
-hf_hub_download(
-    repo_id=config.model_id,
-    filename="config.json",
-    revision=config.revision,
-    local_files_only=False,
-)
-print("Pinned config file accessible; model weights and generation remain unchecked.")
-PY
+PYTHONPATH=src .venv/bin/python scripts/run_llm.py --config configs/llm-local.yaml --check-access
 ```
 
-This downloads a small gated file and uses the existing local login. The
-no-download `--check-access` command does neither. Never print the token or
-place token material in provenance.
+The selected checkpoint remains gated. Existing account access and the cached
+checkpoint are sufficient for the completed access audit; no new login or
+access probe is needed during safe local work. The
+[Hugging Face gated-model guide](https://huggingface.co/docs/hub/models-gated)
+and [commit-pinned download guide](https://huggingface.co/docs/huggingface_hub/en/guides/download)
+remain references for a separately authorized external run. Do not place tokens
+in YAML, source, command arguments, or saved manifests.
 
-## Real-model acceptance, separately recorded
+Actual HF acceptance requires suitable external compute and separate
+provisioning authorization. Before that later run, review the full load and
+inference peak-memory budget, the checkpoint/runtime/kernel identity, and
+identical settings for both baselines. Keep raw completions and validated
+predictions together with provenance. No local retry is a prerequisite for
+finishing the current safe work.
 
-Run Baselines 2 and 3 first on the same schema-valid BT inputs and shared
-configuration, with the tokenizer/model revision pinned as above:
+## Historical Apple Silicon environment
 
-```bash
-python scripts/run_llm.py \
-  --bt-dir /tmp/track5-sample-bt \
-  --config configs/llm.yaml \
-  --variants baseline_2 baseline_3 \
-  --backend hf \
-  --output-dir runs/track5-hf-baselines
+`configs/llm-local.yaml` preserves the failed experiment's settings for audit:
+MPS/FP16, Metal 4-bit quantization with group size 64, 32,768 total tokens,
+1,024 output tokens, batch size 1, seed 723, and model cache `../weights/hub`
+relative to the YAML. It is an unverified experimental configuration, not a
+supported execution profile for the 16 GB laptop. Model execution must remain
+disabled on this machine; there is no automatic retry.
+The adapter may be evaluated on larger Apple hardware in a separately reviewed
+experiment; no such full-model execution has been validated here.
+
+The incident environment was Python 3.13.3 on macOS 26.5.2, Apple M4 with
+16 GB unified memory. Its dependency versions are recorded in
+`configs/llm-local.requirements.txt`: Torch 2.14.1, Transformers 5.23.0,
+`kernels` 0.18.3, Accelerate 1.15.0, Hub 2.4.0, Tokenizers 0.23.3, and
+Safetensors 0.8.0. These pins describe the experiment; they are not installation
+or execution instructions for the current laptop.
+
+The installed Transformers 5.23.0 Metal loader selected kernel API version 1.
+Its inspected revision `6ed0fc4eff016df00830678eb96acb92a6a8f351` provided compiled
+Torch 2.10–2.14 builds and no Torch 2.15 build, leading to the Torch 2.14.1
+selection. The isolated kernel probe loaded successfully on MPS, and the actual
+tokenizer counted 8,406 / 15,329 input tokens for Baseline 2 / Baseline 3.
+Those observations verify compatibility and token counts only. They do not
+measure full-model load peak memory, prefill memory, or operational safety.
+The subsequent full load failed as described above.
+
+The experimental adapter uses the upstream
+[Transformers Metal implementation](https://github.com/huggingface/transformers/blob/main/docs/source/en/quantization/metal.md)
+and its [trusted kernel repository](https://huggingface.co/kernels/kernels-community/mlx-quantization-metal-kernels).
+Kernel execution is separate from model `trust_remote_code`, as described in
+the [official kernel trust documentation](https://huggingface.co/docs/kernels/main/en/security).
+A matching kernel revision and source hash establish identity, not a safe
+memory envelope. Retain the existing expected kernel SHA for audit without
+fetching a replacement or bypassing the resource guard.
+
+## Future external execution and later main-model acceptance
+
+The user identified a future lab Alienware PC with an NVIDIA 5090. Its operating
+system, physical host RAM, actual GPU memory, driver, and compatible Torch/CUDA
+build have not been checked. The GPU name alone is not a fit or compatibility
+guarantee. No GPU probe, model transfer, installation, or run is part of the
+current safe local work.
+
+The future lab workflow must support the machine's actual Windows or Linux
+environment. The macOS dependency file records the failed Mac experiment; it
+is not a CUDA installation lock. Verify host/GPU memory and runtime support
+when the machine is available, then review a dedicated CUDA configuration.
+Use the exact same pinned Llama checkpoint and settings for both baselines,
+and keep those outputs separate from the failed Mac attempt.
+
+The following commands are a future handoff for an authorized, adequately
+provisioned CUDA environment with the project installed. They use plain Python
+commands and repository-relative paths so they do not assume a Unix shell.
+They are not approved local commands and must not be run on this laptop.
+
+```text
+python scripts/run_llm.py --bt-dir data/sample --config configs/llm.yaml --variants baseline_2 baseline_3 --backend hf --output-dir runs/track5-hf-lab-baselines
 ```
 
-These HF commands use the default cache-only policy. First populate the pinned
-cache deliberately or pass the separately reviewed experiment YAML with
-`local_files_only: false` as `--config`. Confirm the selected CUDA/BF16 device
-is available before generation; changing it requires a new recorded config.
+The reference profile uses cache-only loading and CUDA/BF16. A later approved
+run must confirm those choices against the actual hardware and supply a
+separately reviewed YAML if loading/cache settings need to differ. All
+resource, runtime, and model identity checks precede that run. No lighter-model
+run is needed for current local validation: stub and fake-HF tests cover the
+pipeline while exact Llama-3.1-8B acceptance remains pending.
 
 For the main variant, use Track 3's parser output with genuinely computed
 observed-stage divergence, then run all three variants together into a new
 directory. A synthetic enriched fixture can validate the HF transport path,
 but it does not satisfy acceptance on real producer inputs.
 
-```bash
-python scripts/run_llm.py \
-  --bt-dir data/processed/smoke/bt \
-  --config configs/llm.yaml \
-  --variants baseline_2 baseline_3 main \
-  --backend hf \
-  --output-dir runs/track5-hf-computed-divergence
+```text
+python scripts/run_llm.py --bt-dir data/processed/smoke/bt --config configs/llm.yaml --variants baseline_2 baseline_3 main --backend hf --output-dir runs/track5-hf-computed-divergence
 ```
 
 Retain the per-variant JSONL and sibling run manifest. Check one unique
@@ -259,6 +395,29 @@ that owner's follow-up rather than a Track 5 edit to evaluation code.
 
 ## Offline verification evidence
 
+After the November 14 incident, safe verification completed with network
+access disabled, CPU thread counts limited, and imports of actual Torch,
+Transformers, Kernels, and Hub runtimes blocked by the verification process:
+
+- The parser and Track 5 suites passed **284 tests**. No actual model runtime
+  was imported, and fake runtime resources exercised both batching and refusal
+  paths.
+- The full repository suite reported **609 passed, 1 failed**. The remaining
+  failure is the existing Track 4 `test_label_vocabularies_match_shared_schemas`
+  mismatch concerning `excessive_speed`; no evaluator files were changed.
+- `runs/track5-nov06/safe-local-preflight.json` records this machine's actual
+  16 GiB physical RAM and refusal before runtime imports. Unknown or inadequate
+  available memory is also rejected.
+- `runs/track5-nov06/safe-stub/run_manifest.json` records a fresh baseline smoke
+  with two stub abstentions and zero errors. Its acceptance is `synthetic`.
+  These files were generated after the reboot and are separate from the
+  interrupted `local-hf` attempt, which produced no accepted result directory.
+
+No additional installation, model download, GPU initialization, full-model
+load, or lighter-model run was performed during that safe verification.
+Baseline 2/3 real-HF acceptance remains pending the lab machine.
+
+The following evidence describes the earlier Oct. 30 foundation checks only.
 The documented baseline smoke and synthetic all-variant smoke were executed on
 November 12, 2026 in a base environment with no installed Torch, Transformers,
 or Hugging Face Hub packages. Both exited successfully: respectively two and
