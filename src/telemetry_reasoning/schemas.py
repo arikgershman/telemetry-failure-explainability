@@ -1,4 +1,4 @@
-"""Version 1 contracts shared by data generation, parsing, and model consumers.
+"""Canonical contracts shared by data generation, parsing, and model consumers.
 
 Times are seconds, positions meters, forces newtons, joint angles radians,
 joint torques N m, and quaternions ordered (w, x, y, z).
@@ -136,8 +136,9 @@ SUBTASK_METADATA: dict[Subtask, SubtaskMetadata] = {
 class DeterministicDivergence(ContractModel):
     """Reserved metrics contract; this scaffold does not compute divergence.
 
-    A future implementation must document alignment and thresholds. A missing
-    subtask-level object (null) means not computed, never zero divergence.
+    A future implementation must document alignment and thresholds. The node's
+    divergence_status distinguishes uncomputed observed stages from unobserved,
+    not-comparable stages. A null object never means zero divergence.
     """
 
     first_divergence_timestamp: Nonnegative | None = None
@@ -156,24 +157,70 @@ def validate_observation_sequence(rows: Sequence[RawTelemetryRow]) -> None:
             raise ValueError("timestamps must be strictly increasing with no duplicates")
 
 
+def validate_subtask_sequence(
+    subtasks: Sequence[Subtask], task: Task, *, allow_partial: bool = False,
+    run_name: str = "telemetry",
+) -> None:
+    """Validate consecutive segment labels, not one label per observation.
+
+    Successes require the complete template. Failures may contain a nonempty
+    prefix, including the complete template. Missing interior stages, revisits,
+    and reorderings are invalid. This establishes coverage, not physical success
+    or whether the recording ended intentionally.
+    """
+    expected = TASK_SUBTASKS[task]
+    observed = tuple(subtasks)
+    required = expected[:len(observed)] if allow_partial else expected
+    if not observed or observed != required:
+        requirement = ("a nonempty ordered prefix of the task template" if allow_partial
+                       else "the complete ordered task template")
+        raise ValueError(f"{run_name} run must contain {requirement}")
+
+
 class SubtaskBT(ContractModel):
+    """Observation coverage, without inferred completion or failure labels.
+
+    ``transitioned`` means a later stage was observed, not that this subgoal
+    physically succeeded. ``trace_end`` marks the last observed stage; the raw
+    CSV alone cannot establish why recording ended. Missing observations never
+    become telemetry or computed-zero divergence.
+    """
+
     subtask: Subtask
     metadata: SubtaskMetadata
     success_samples: Annotated[list[RawTelemetryRow], Field(min_length=1)]
-    failure_samples: Annotated[list[RawTelemetryRow], Field(min_length=1)]
+    failure_samples: list[RawTelemetryRow]
     deterministic_divergence: DeterministicDivergence | None = None
+    failure_observation_status: Literal["observed", "not_observed"]
+    failure_segment_end: Literal["transitioned", "trace_end"] | None
+    divergence_status: Literal["uncomputed", "computed", "not_comparable"]
 
     @model_validator(mode="after")
     def valid_samples(self) -> "SubtaskBT":
+        validate_observation_sequence(self.success_samples)
+        if self.failure_samples:
+            validate_observation_sequence(self.failure_samples)
         for samples in (self.success_samples, self.failure_samples):
-            validate_observation_sequence(samples)
             if any(row.subtask != self.subtask for row in samples):
                 raise ValueError("every sample must match its BT subtask")
+        observed = bool(self.failure_samples)
+        if (self.failure_observation_status == "observed") != observed:
+            raise ValueError("failure_observation_status must match failure sample availability")
+        if observed != (self.failure_segment_end is not None):
+            raise ValueError("failure_segment_end is required exactly when failure samples exist")
+        if not observed:
+            if self.divergence_status != "not_comparable" or self.deterministic_divergence is not None:
+                raise ValueError("unobserved stages require not_comparable divergence and a null object")
+        elif self.divergence_status == "not_comparable":
+            raise ValueError("observed stages require uncomputed or computed divergence")
+        elif (self.divergence_status == "computed") != (self.deterministic_divergence is not None):
+            raise ValueError("divergence_status must match the divergence object")
         return self
 
 
 class PairedBehaviorTree(ContractModel):
-    schema_version: Literal["1.0"] = "1.0"
+    """Complete task structure with observed failure coverage forming a prefix."""
+
     metadata: MetadataRow
     overall_goal: Name
     subtasks: Annotated[list[SubtaskBT], Field(min_length=1)]
@@ -182,6 +229,15 @@ class PairedBehaviorTree(ContractModel):
     def valid_structure(self) -> "PairedBehaviorTree":
         if tuple(node.subtask for node in self.subtasks) != TASK_SUBTASKS[self.metadata.task]:
             raise ValueError("BT subtasks must match the complete ordered task template")
+        observed = [node for node in self.subtasks if node.failure_samples]
+        validate_subtask_sequence(
+            [node.subtask for node in observed], self.metadata.task,
+            allow_partial=True, run_name="failure",
+        )
+        for index, node in enumerate(observed):
+            expected_end = "trace_end" if index == len(observed) - 1 else "transitioned"
+            if node.failure_segment_end != expected_end:
+                raise ValueError("failure_segment_end must identify the last observed stage")
         for field in ("success_samples", "failure_samples"):
             validate_observation_sequence([
                 row for node in self.subtasks for row in getattr(node, field)
@@ -202,9 +258,9 @@ class PairedBehaviorTree(ContractModel):
                 excluded.add("success_samples")
             if not include_divergence:
                 excluded.add("deterministic_divergence")
+                excluded.add("divergence_status")
             nodes.append(node.model_dump(mode="json", exclude=excluded))
         return {
-            "schema_version": self.schema_version,
             "pair_id": self.metadata.pair_id,
             "task": self.metadata.task.value,
             "overall_goal": self.overall_goal,

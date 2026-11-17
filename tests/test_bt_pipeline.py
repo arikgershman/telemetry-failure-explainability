@@ -50,7 +50,7 @@ def write_pair(directory, pair_id, task=Task.TRANSPORT_OBJECT):
     return metadata
 
 
-def test_existing_sample_batch_matches_versioned_tree():
+def test_sample_batch_matches_stored_tree():
     data_dir = ROOT / "data/sample"
     config = load_config(ROOT / "configs/default.yaml")
     result = build_paired_bts(read_metadata_csv(data_dir / "metadata.csv"), data_dir, config.parser)
@@ -133,7 +133,9 @@ def test_batch_rejects_incomplete_or_revisited_stages(tmp_path, task, problem, s
     assert not result.trees
     error, = result.errors
     assert error.pair_id == metadata.pair_id
-    assert f"{side} run must contain the complete ordered task template" in error.message
+    requirement = ("a nonempty ordered prefix of the task template" if side == "failure"
+                   else "the complete ordered task template")
+    assert f"{side} run must contain {requirement}" in error.message
 
 
 def test_empty_batch_and_duplicate_ids(tmp_path):

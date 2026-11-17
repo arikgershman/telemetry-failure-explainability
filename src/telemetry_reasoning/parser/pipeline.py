@@ -3,9 +3,9 @@
 Call ``build_paired_bts(read_metadata_csv(path), data_dir, config.parser)``.
 The result contains every valid tree and a separate error for each rejected
 pair, in input order within each collection. No files are written. Dataset
-serialization is available through ``parse_dataset``. Divergence remains null
-until the explicit Nov. 13 metric stage; the single-pair and in-memory APIs
-retain their original behavior.
+serialization is available through ``parse_dataset``. Observed-node divergence
+remains uncomputed until the explicit metric stage. Unobserved nodes are
+explicitly not comparable, rather than computed-zero or pending comparisons.
 """
 
 import csv
@@ -58,8 +58,9 @@ def build_paired_bts(
     Duplicate IDs reject the whole batch before reading any pair files. Expected
     file/validation failures are recorded per pair while later pairs continue;
     programming errors propagate. Metadata CSV errors are raised by the reader
-    before this API is called. All successful trees retain null (uncomputed)
-    divergence, matching ``build_paired_bt``. Inputs are never modified.
+    before this API is called. Failure prefixes retain the full task structure;
+    null divergence is uncomputed on observed stages and not comparable on
+    unobserved stages. Inputs are never modified.
     """
     if len({row.pair_id for row in metadata}) != len(metadata):
         raise ValueError("metadata pair_id values must be unique")
@@ -93,8 +94,9 @@ def parse_dataset(
 ) -> DatasetParseResult:
     """Write valid ``pair_<id>_bt.json`` files and ``parse_report.json``.
 
-    Invalid pair files or incomplete task templates are reported and excluded;
-    remaining pairs continue. Nothing is moved, repaired, or fabricated in the
+    Invalid pair files, incomplete successes, and non-prefix failure sequences
+    are reported and excluded; remaining pairs continue. Nothing is moved,
+    repaired, or fabricated in the
     source dataset. Duplicate IDs and unsafe filename IDs reject the batch.
     Output must be absent or empty to prevent downstream glob readers consuming
     stale BTs. A staged directory is published only after all writes succeed;
@@ -105,6 +107,8 @@ def parse_dataset(
     sizes (not tokenizer counts). Results are deterministic for identical inputs,
     configuration, paths, and provenance; no wall-clock fields are inserted.
     This API does not select splits or claim the dataset is Track 2 validated.
+    All pairs use the same explicit coverage and comparison states, including
+    terminal-stage state on failures that reached every expected stage.
     """
     # Lazy import keeps the established in-memory API independent of reporting.
     from telemetry_reasoning.parser.diagnostics import (
@@ -124,8 +128,6 @@ def parse_dataset(
 
     config_value = config.model_dump(mode="json")
     report = {
-        "report_version": "1.0",
-        "bt_schema_version": "1.0",
         "data_dir": str(data_dir.resolve()),
         "output_dir": str(output_dir.resolve()),
         "compression_config": config_value,
@@ -135,8 +137,11 @@ def parse_dataset(
         "provenance": provenance or {},
         "divergence": {
             "status": "not_computed",
-            "note": "Null node objects are uncomputed; metric enrichment is the Nov. 13 stage.",
+            "note": ("Observed-node objects are uncomputed. Unobserved nodes explicitly "
+                     "have divergence_status=not_comparable; null never means zero."),
+            "node_counts": {"uncomputed": 0, "not_comparable": 0},
         },
+        "failure_coverage": {"complete_template_pairs": 0, "partial_prefix_pairs": 0},
         "counts": {"input_pairs": len(metadata), "written_pairs": 0, "rejected_pairs": 0},
         "pairs": [],
         "errors": [],
@@ -173,8 +178,19 @@ def parse_dataset(
             (staged / name).write_text(payload, encoding="utf-8")
             names.append(name)
             diagnostics.append(detail)
+            observed = [node.subtask.value for node in tree.subtasks if node.failure_samples]
+            unobserved = [node.subtask.value for node in tree.subtasks if not node.failure_samples]
+            coverage = "partial_prefix_pairs" if unobserved else "complete_template_pairs"
+            report["failure_coverage"][coverage] += 1
+            report["divergence"]["node_counts"]["uncomputed"] += len(observed)
+            report["divergence"]["node_counts"]["not_comparable"] += len(unobserved)
             report["pairs"].append({
                 "pair_id": row.pair_id, "task": row.task.value,
+                "failure_coverage": {
+                    "observed_subtasks": observed, "not_observed_subtasks": unobserved,
+                    "last_observed_subtask": observed[-1],
+                    "termination_verified": False,
+                },
                 "output_file": name,
                 "output_sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
                 "sources": sources, "diagnostics": detail,

@@ -1,144 +1,215 @@
-# Track 3: Nov. 6 handoff
+# Track 3 parser handoff
 
-Batch parsing, serialization, compression measurement, and a guarded tuning
-sweep are implemented. `configs/parser.yaml` is a complete `ProjectConfig` and
-deliberately preserves the mock settings. It is **provisional**, pending tuning
-on Track 2's validated train/dev data. Shared schemas, default configuration,
-and checked-in samples are unchanged.
+## Task structure and observed execution
 
-Run from the repository root using the existing environment (or install the
-project into another Python 3.10+ environment):
+Every pair uses one canonical `PairedBehaviorTree` and `SubtaskBT` contract.
+The success trace must contain the complete ordered `TASK_SUBTASKS` template;
+the failure trace may contain any nonempty ordered prefix, including the full
+template. Pickup has four stages and transport has three. Skipped interior
+stages, repeated visits, reordered stages, empty traces, malformed observations,
+cadence violations, and inconsistent joint dimensions remain errors.
+
+The tree always retains every expected task node, its semantic metadata, and
+its success samples. A stage without failure observations has
+`failure_samples: []`; it never receives fabricated rows or numeric sentinels.
+These required fields describe coverage for all pairs:
+
+| Field | Meaning |
+| --- | --- |
+| `failure_observation_status` | `observed` exactly when failure samples exist; otherwise `not_observed`. |
+| `failure_segment_end` | `transitioned` when a later stage was observed; `trace_end` for the final observed stage; null for unobserved stages. |
+| `divergence_status` | `uncomputed` with a null object for observed stages; `computed` with a divergence object; `not_comparable` with a null object for unobserved stages. |
+
+The schema checks that observed failure stages form a nonempty prefix and
+exactly its final node has `trace_end`. A transition establishes a stage
+boundary, not physical goal achievement. The final sample does not establish
+why recording stopped. Coverage states are derived from observations, never
+from the injection label or failure mode. Raw CSV and metadata columns are
+unchanged. `data/sample/pair_000_bt.json` uses this same contract.
+
+## Construction and batch parsing
+
+Run from the repository root, using the project environment:
 
 ```bash
-PYTHONPATH=src .venv/bin/python -W error -m pytest tests/test_parser.py tests/test_bt_pipeline.py tests/test_divergence.py tests/test_compression_diagnostics.py tests/test_compression_tuning.py
-PYTHONPATH=src .venv/bin/python scripts/parse_dataset.py --metadata data/sample/metadata.csv --data-dir data/sample --config configs/parser.yaml --output-dir data/processed/track3-nov06/sample/bt
+PYTHONPATH=src .venv/bin/python scripts/parse_dataset.py --metadata DATA/metadata.csv --data-dir DATA --config configs/parser.yaml --output-dir OUTPUT/bt
 ```
 
-Use a fresh/empty output directory. Reusing a populated directory fails before
-writing anything, preventing stale files from entering Track 4/5 glob readers.
-The sample BT is byte-identical to `data/sample/pair_000_bt.json`: 31 success and
-34 failure samples from 800 raw observations, including the failed-grasp
-5.08/5.10/5.12 s neighborhood. This demonstrates reproducibility, not physical
-performance or calibrated compression thresholds.
-
-## Batch API and outputs
-
-The existing `build_paired_bt()` and `build_paired_bts()` signatures and behavior
-are unchanged. The new exported API is:
+Use a fresh or empty output directory. Task-local pair IDs in the supplied
+archive overlap, so parse each task into a separate directory until Track 2
+supplies unique IDs. Never silently prefix or relabel metadata IDs.
 
 ```python
-from telemetry_reasoning.parser import parse_dataset
+from telemetry_reasoning.parser import build_paired_bt, build_paired_bts, parse_dataset
 
-result = parse_dataset(metadata, data_dir, compression_config, output_dir)
-# result.files: ordered tuple of written BT paths
-# result.report_path: output_dir / "parse_report.json"
-# result.report: detached JSON-compatible report
+tree = build_paired_bt(metadata_row, data_dir, compression_config)
+batch = build_paired_bts(metadata_rows, data_dir, compression_config)
+# batch.trees and batch.errors are ordered tuples.
+result = parse_dataset(metadata_rows, data_dir, compression_config, output_dir)
+# result.files, result.report_path, result.report
 ```
 
-For each input pair, the pipeline either writes a schema-valid
-`pair_<pair_id>_bt.json` or records its source filenames, exception type, and
-message in `parse_report.json`. Source CSVs are never changed. Quarantine is an
-explicit rejection record; no files are moved and no observations are invented.
-Missing/repeated/reordered stages, malformed rows, cadence violations, and
-inconsistent joint dimensions remain errors. Duplicate IDs reject the batch;
-path separators/control newlines in IDs are refused for flat output filenames.
-Both task templates and arbitrary consistent joint counts are supported.
+`validate_subtask_sequence()` is shared in `schemas.py` and exported from the
+parser package. It validates consecutive segment labels with `allow_partial`
+enabled for failures. `build_bt_from_segments()` provides pure construction
+from consecutive compressed segments. Both construction paths validate order
+before matching by subtask name, so revisits cannot overwrite segments and a
+short failure cannot discard the remaining successful reference.
 
-Output is staged before publication. Fatal input/configuration/storage failures
-do not publish a partial batch. CLI exit codes are 0 for all pairs written, 1
-for pair rejections with valid outputs/report published, and 2 for fatal errors.
-The report includes exact input/output inventories, source and configuration
-hashes, and no runtime clock fields, allowing deterministic reproduction.
+Batch APIs produce one tree or an explicit error for each pair. Invalid inputs
+are recorded with source filenames, exception type, and message; sources are
+never moved or repaired. Duplicate IDs reject a batch before pair reads;
+unsafe filename IDs are rejected before serialization. Outputs are staged
+before publication, and fatal storage errors do not publish a partial batch.
+CLI exit codes are 0 for all pairs written, 1 for recorded pair rejections,
+and 2 for fatal input/configuration/storage failures.
 
-Every divergence object remains **null / not computed**. The Nov. 13 metric
-stage, its separate `configs/divergence.yaml`, and the full frozen-dataset
-conversion are still pending. This Nov. 6 command therefore does not accept
-`--divergence-config`. Null must not be interpreted as zero. Track 4's baseline
-and plotting consumers can read these BTs now; the main LLM variant must wait
-for computed divergence.
+`parse_report.json` includes written/rejected inventories, source/output/config
+hashes, complete-versus-partial failure coverage, observed/unobserved stage
+counts, comparison availability, compression quality, and model-view payload
+sizes. Reports contain no wall-clock fields and reproduce deterministically.
+`termination_verified` remains false: parsing establishes structure, while
+Track 2 verifies intentional termination, physical outcomes, and data integrity.
 
-## Measurements and tuning
+## Alignment
 
-`parser/diagnostics.py` compares the actual retained observations to raw 50 Hz
-telemetry. Reports include stage/run/pair counts, raw/retained compression ratio,
-strict adjacent-component reference events, event centers, complete clipped
-`t-1/t/t+1` neighborhoods, and unique neighbor-row retention. Events are never
-compared across subtask boundaries. No-event denominators are null.
+`align_subtask_samples(node)` returns detached comparison arrays and does not
+modify the node or compute divergence scores:
 
-Reconstruction uses the existing within-subtask progress alignment: linear
-continuous features, previous-value closure, and normalized sign-aligned
-shortest-path quaternion SLERP. It reports maximum and component-weighted mean
-absolute errors for every feature. Quaternion errors are component differences,
-not angles. Zero quaternions are permitted by the storage schema, so their
-reconstruction metric is explicitly unavailable rather than an invented value.
-These errors measure compression loss, not paired divergence or physical onset.
+- A `transitioned` stage uses the union of normalized retained timestamps.
+  This removes pure duration differences without asserting physical success.
+- A `trace_end` stage uses stage-relative elapsed seconds over the common
+  observed interval. Its endpoint is never stretched to nominal completion;
+  neither side is extrapolated. Singletons compare only at elapsed zero.
+  Timeout tails remain in the original samples and observed durations.
+- An unobserved stage returns `availability="not_comparable"` with empty
+  timestamp and feature arrays. Absence is never a zero-valued comparison.
 
-Prompt payload measurements use compact sorted-key JSON from the leakage-free
-view helpers, with the opaque pair ID removed. They report Unicode characters
-and UTF-8 bytes, excluding prompt templates. They are **not model token counts**.
+`alignment_mode` is `normalized_progress`, `common_elapsed_time`, or
+`unavailable`. `progress` is dimensionless only in progress mode;
+`elapsed_seconds` contains seconds only in time mode. The inactive coordinate
+is null. Results include absolute timestamps, observed durations, and the
+shared elapsed interval where applicable. Stage-relative time assumes paired
+controller timing is a meaningful coordinate; it is not measured physical
+phase. Interpolated times and values are comparisons, not observations.
+
+Continuous features use linear interpolation, gripper closure uses the previous
+value, and quaternions use normalized, sign-aligned shortest-path SLERP.
+Queries within 1e-12 coordinate units of a retained sample snap to that sample
+to avoid roundoff-induced closure transitions. Comparisons never cross stage
+boundaries. Quaternion deltas are component differences, not angular distances.
+
+## Compression diagnostics and tuning
+
+Compression retains original stage endpoints, up to `k` uniform interior
+observations, and clipped `t-1/t/t+1` neighborhoods around adjacent changes
+strictly exceeding configured thresholds. No event comparison crosses a stage
+boundary. `k=0` disables uniform interior sampling. The parser configuration
+remains provisional; this change does not calibrate settings on real data.
+
+Diagnostics compare retained rows to raw 50 Hz observations. They report raw
+and retained counts, compression ratios, event-center and complete-neighborhood
+retention, reconstruction errors, and prompt payload characters/UTF-8 bytes.
+Payload measurements are not tokenizer counts and exclude prompt templates
+and pair IDs. Reference event thresholds stay fixed across tuning candidates.
+
+Missing stages have zero row/event counts and null ratios/errors. They do not
+contribute fabricated zero reconstruction errors or event denominators. Raw
+reconstruction compares each retained segment with its own recorded interval,
+whose endpoints are preserved, independently of paired termination state.
+Zero quaternions make only the corresponding reconstruction feature unavailable.
 
 ```bash
-PYTHONPATH=src .venv/bin/python scripts/tune_compression.py --metadata DATA/metadata.csv --data-dir DATA --config configs/parser.yaml --manifest DATA/manifest.json --output runs/track3-nov06/compression-dev.json
+PYTHONPATH=src .venv/bin/python scripts/tune_compression.py --metadata DATA/metadata.csv --data-dir DATA --config configs/parser.yaml --manifest DATA/manifest.json --output runs/compression-dev.json
 ```
 
-The supplied sidecar must contain every metadata pair exactly once, with
-`split` (`train`, `dev`, or `test`) and `initial_condition_id`. Both evaluator
-shapes are accepted: `{"pairs": {"000": {...}}}` and
-`{"pairs": [{"pair_id": "000", ...}]}`. `(task, initial_condition_id)` groups must
-not overlap splits. Integers and their string representations identify the
-same group. Validation covers all entries before any telemetry is opened.
-Only the requested train/dev split is read or hashed; test telemetry is never
-used. Missing/invalid grouping fails explicitly; the tuner does not invent
-Track 2's assignments.
+The manifest must cover every metadata pair with a `split` and
+`initial_condition_id`, using either a pair-ID mapping or a list of records.
+All groups are validated before telemetry is opened; `(task, initial_condition_id)`
+groups cannot cross splits. Only the selected train/dev telemetry is read or
+hashed. Test data never contributes to compression selection, and the tuner
+does not invent missing Track 2 split assignments.
 
-The default grid is `k = [0, 2, 5]` and event-threshold scale
-`[0.5, 1, 2]`, applied to every configured feature. Raw reference-event
-thresholds stay fixed at the base settings for all nine candidates. The report
-recommends the smallest paired payload that preserves all reference-event
-neighborhoods and does not increase any feature's per-pair maximum
-reconstruction error over the base (apart from a documented 1e-12 numerical
-tolerance). All candidates, source/configuration hashes, checks, and tie rules
-are retained. The sweep never updates configuration automatically.
+The default grid is `k=[0,2,5]` and threshold scales `[0.5,1,2]`. Candidate
+trees preserve the complete task structure and coverage states, recompress
+only observed rows, and clear any earlier computed divergence. The recommendation
+minimizes paired payload bytes while retaining every fixed-reference event
+neighborhood and not increasing per-pair maximum reconstruction errors over
+the base beyond 1e-12 numerical tolerance. All candidates and tie rules are
+reported. Configuration is never changed automatically.
 
-## Real-data boundary
+## Model views and track boundaries
 
-Gili's `dataset_v1.zip` (seed 723) supplies raw telemetry and diagnostics, but no
-validated grouped split manifest. Its task-local pair IDs also collide across
-the two metadata files. Parse them into **separate output directories** until
-Track 2 supplies globally unique IDs; never silently prefix or relabel them.
-Some injected runs are partial and cannot satisfy the frozen complete-template
-schema. Track 3 reports them without changing Track 1/2's data or acceptance
-policy. Full-archive parser compatibility evidence and synthetic tuning reports
-are stored under ignored `runs/track3-nov06/`; neither establishes a validated
-final dataset or real-data train/dev calibration.
+Storage retains scoring metadata. Model inputs use `to_failure_only()`,
+`to_paired_without_divergence()`, or `to_full_paired()`, which remove ground-truth
+labels, perturbations, source filenames, and seed. Failure-only views also omit
+success samples. Views excluding divergence omit both its object and comparison
+status. Factual failure coverage is available consistently across variants.
 
-The complete fixed-default preview on the supplied archive produced:
+This implementation covers Track 3 and the necessary shared BT contract/sample.
+Simulation, dataset acceptance, models, evaluation, plotting, and their tests
+are owned by their respective tracks. Track 2 verifies valid termination and
+physical outcomes. Track 4 should handle empty stages and interrupted endpoints
+in plots and rules. Track 5 should distinguish uncomputed observed-stage
+divergence from unobserved stages when building its prompts. Evidence must
+always cite real failure observations. Numerical divergence scoring remains a
+separate milestone; this parser does not claim to compute those metrics.
 
-| Task | Input pairs | Written BTs | Rejected incomplete failures |
-| --- | ---: | ---: | ---: |
-| `pick_up_object` | 500 | 384 | 116 |
-| `transport_object` | 500 | 226 | 274 |
-| Total | 1,000 | 610 | 390 |
+## Verification
 
-The compatible pairs retained 110,283 of 448,309 raw observations (24.60%,
-4.065x reduction) and all 71,708 feature-event neighborhoods under the fixed
-reference thresholds. Every output was schema-validated, and archive/source
-hashes were unchanged. These 610 pairs are **not a replacement balanced
-dataset**: compatibility filtering removes all transport inadequate-grip
-examples. Track 2 must resolve partial-trace handling before final conversion.
-The small real-source smoke also passed through Track 4's existing baseline
-CLI without filename/schema errors.
+```bash
+PYTHONPATH=src .venv/bin/python -W error -m pytest tests/test_parser.py tests/test_bt_pipeline.py tests/test_partial_traces.py tests/test_divergence.py tests/test_compression_diagnostics.py tests/test_compression_tuning.py
+```
 
-The explicitly synthetic development sweep uses six pairs (both tasks, three
-seeds) and all nine grid candidates. Its recommendation retains all six fixed
-reference-event neighborhoods and reduces retained rows from 306 to 102 and
-paired payload bytes from 105,138 to 36,939. These results apply only to that
-synthetic corpus; no production settings were changed. The generator, command,
-and byte-identical repeated report are saved in
-`runs/track3-nov06/synthetic-tuning/`.
+The suite covers both tasks and every failure-prefix length, invalid sequences,
+required and contradictory states, source integrity, serialization, model-view
+exclusions, elapsed-time censoring, singleton/quaternion/closure edge cases,
+compression quality, and grouped tuning. Fresh sample generation reproduces
+the checked-in files byte for byte.
 
-Verification with warnings treated as errors passes all 152 Track 3 tests.
-The full repository suite passes 279 tests and retains one pre-existing Track 4
-failure: `test_label_vocabularies_match_shared_schemas` because its evaluator
-vocabulary omits `excessive_speed`. Track 3 does not change that owned code or
-the shared valid failure-mode enum.
+Current verification passes all 231 Track 3 tests with warnings treated as
+errors. The full suite has 358 passes and the pre-existing Track 4 evaluator
+vocabulary failure for `excessive_speed`. All 1,000 supplied pairs also parse
+and schema-validate, including 390 partial failure prefixes, with all 2,007
+source files unchanged. The report at
+`runs/track3-partial-traces/current-xorunaw4/verification.json` records the
+per-task counts and alignment modes. This verifies parser structure and
+alignment bounds, not physical outcomes, calibrated settings, or model quality.
+
+Additional interface verification is reproducible with:
+
+```bash
+MPLCONFIGDIR=/tmp/telemetry-parser-mpl PYTHONPATH=src:. .venv/bin/python -W error runs/track3-partial-traces/additional-verification/verify.py
+```
+
+Its report at
+`runs/track3-partial-traces/additional-verification/run-grkot5wq/verification.json`
+confirms that freshly rebuilt trees match all 1,000 stored trees exactly and
+all 156,159 retained samples equal source observations. All 1,000 controller
+sidecars agree with observed coverage; this is not a physical-causality check.
+All four represented modes remain at 125 pairs per task, including the
+transport inadequate-grip cases previously excluded by the complete-trace rule.
+
+Both baseline CLIs load all 500 pairs per task with no input errors or invalid
+prediction records. All 1,676 cited evidence items match real failure samples,
+and the evaluator rejects fabricated citations from all 688 unobserved stages.
+The evaluation API and CLI without BT evidence input also run successfully.
+These checks establish interface and evidence validity, not diagnostic accuracy.
+
+Seeded synthetic checks cover 100 source pairs, four compression settings, 400
+tree builds, 1,400 aligned nodes, and 4,247 segment-label sequences. The terminal
+analytic-motion checks retain closure events before asserting equal prefixes;
+disabled event retention can deliberately lose interior transitions.
+
+Two **Track 4 integration blockers** remain outside this implementation:
+
+- `scripts/evaluate.py:64` calls `.model_dump()` on the dictionary returned by
+  `to_failure_only()`. The evaluator CLI fails with `--bt-dir`, for complete
+  and partial trees. Use the returned dictionary directly in that owned adapter.
+- `eval/plots.py:149-150` takes `min()`/`max()` of every failure sample list.
+  Complete-tree plots render, but partial-tree plots fail on the unobserved
+  suffix. That owner must skip unavailable spans and distinguish unavailable
+  comparisons from uncomputed ones.
+
+Exact CLI stderr, plot pair IDs, predictions, and direct-API evaluation results
+are retained with the report. Those owned modules were not changed.

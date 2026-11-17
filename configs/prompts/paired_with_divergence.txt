@@ -1,0 +1,3 @@
+Diagnose the execution described by the following Behavior Tree JSON. Apply the same evidence and output rules to every available input view. Return only the five-field JSON object specified in the system instructions.
+
+{{PAYLOAD}}

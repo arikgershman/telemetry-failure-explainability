@@ -20,6 +20,7 @@ from telemetry_reasoning.io import validate_raw_run
 from telemetry_reasoning.parser.divergence import QUATERNION_FEATURES, align_subtask_samples
 from telemetry_reasoning.schemas import (
     TASK_SUBTASKS, PairedBehaviorTree, RawTelemetryRow, SubtaskBT, TelemetryFeature,
+    validate_subtask_sequence,
 )
 
 
@@ -77,9 +78,9 @@ def _event_retention(
 def _reconstruction_error(
     node: SubtaskBT, raw: Sequence[RawTelemetryRow], retained: Sequence[RawTelemetryRow],
 ) -> dict[str, Any]:
-    # Comparison uses the existing alignment semantics, with the retained rows
-    # as the reconstructed trace and the raw rows as its reference. The checked
-    # endpoints agree, so the union grid is exactly the raw observation grid.
+    # Compare retained rows with the raw reference over their shared observed
+    # interval. The checked endpoints agree, so the union grid is exactly the
+    # raw observation grid; the paired trajectory's termination state is irrelevant.
     # Quaternion normalization is undefined at zero. The storage schema permits
     # zero quaternions, so report that feature unavailable without rejecting an
     # otherwise parser-compatible trace or hiding errors in other features.
@@ -96,6 +97,8 @@ def _reconstruction_error(
     comparison = SubtaskBT(
         subtask=node.subtask, metadata=node.metadata,
         success_samples=retained_rows, failure_samples=reference_rows,
+        failure_observation_status="observed", failure_segment_end="trace_end",
+        divergence_status="uncomputed",
     )
     aligned = align_subtask_samples(comparison)
     result = {}
@@ -120,11 +123,35 @@ def _reconstruction_error(
     return result
 
 
+def _unobserved_stage(
+    node: SubtaskBT, reference_thresholds: Mapping[TelemetryFeature, float],
+) -> dict[str, Any]:
+    """Record absent observations without inventing reconstruction evidence."""
+    return {
+        "subtask": node.subtask.value, "observation_status": "not_observed",
+        "observed_stages": 0, "not_observed_stages": 1,
+        **_row_counts(0, 0),
+        "event_retention": {
+            feature.value: _event_counts(0, 0, 0, 0, 0)
+            for feature in reference_thresholds
+        },
+        "reconstruction_error": {
+            feature.value: {
+                "max_abs_error": None, "mean_abs_error": None,
+                "component_observations": 0, "unavailable_stages": 0,
+                "not_observed_stages": 1,
+            } for feature in TelemetryFeature
+        },
+    }
+
+
 def _aggregate(reports: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     result = _row_counts(
         sum(report["raw_rows"] for report in reports),
         sum(report["retained_rows"] for report in reports),
     )
+    result["observed_stages"] = sum(report["observed_stages"] for report in reports)
+    result["not_observed_stages"] = sum(report["not_observed_stages"] for report in reports)
     features = sorted({feature for report in reports for feature in report["event_retention"]})
     result["event_retention"] = {}
     count_keys = (
@@ -141,14 +168,17 @@ def _aggregate(reports: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         metrics = [report["reconstruction_error"][feature.value] for report in reports]
         count = sum(metric["component_observations"] for metric in metrics)
         unavailable = sum(metric["unavailable_stages"] for metric in metrics)
-        complete = bool(metrics) and not unavailable
+        not_observed = sum(metric.get("not_observed_stages", 0) for metric in metrics)
+        observed = [metric for metric in metrics if metric["component_observations"]]
+        complete = bool(observed) and not unavailable
         entry = {
-            "max_abs_error": max(metric["max_abs_error"] for metric in metrics) if complete else None,
+            "max_abs_error": max(metric["max_abs_error"] for metric in observed) if complete else None,
             "mean_abs_error": fsum(
                 metric["mean_abs_error"] * (metric["component_observations"] / count)
-                for metric in metrics
+                for metric in observed
             ) if complete else None,
             "component_observations": count, "unavailable_stages": unavailable,
+            "not_observed_stages": not_observed,
         }
         if unavailable:
             entry["unavailable_reason"] = "one or more stages contain a zero quaternion"
@@ -179,8 +209,9 @@ def compression_diagnostics(
     """Measure the actual stored samples against their original 50 Hz traces.
 
     The result is JSON serializable and never changes rows, tree, or settings.
-    Both raw runs must satisfy the complete ordered task template and paired
-    joint dimensions. Every retained row must equal an original observation;
+    Success must satisfy the complete ordered task template; failure may be a
+    nonempty ordered prefix. Both runs must share joint dimensions. Every
+    retained row must equal an original observation;
     stage endpoints must remain present. This permits evaluating a lossy tree
     independently of how it was built, without manufacturing observations.
 
@@ -193,7 +224,10 @@ def compression_diagnostics(
     measure compact sorted-key JSON with Unicode preserved and pair_id removed;
     they exclude prompt templates and are not tokenizer/model token counts.
     The full paired view includes any existing divergence objects/nulls, but
-    diagnostics do not compute paired divergence or onset.
+    diagnostics do not compute paired divergence or onset. Unobserved failure
+    stages have zero row/event counts, null fractions and reconstruction errors,
+    and are excluded from reconstruction averages. They are counted separately
+    from observed stages with unavailable quaternion reconstruction.
     """
     thresholds = CompressionConfig(major_event_thresholds=dict(
         config.major_event_thresholds if reference_thresholds is None else reference_thresholds
@@ -208,11 +242,20 @@ def compression_diagnostics(
     runs = {}
     for name, rows in (("success", success_rows), ("failure", failure_rows)):
         segments = [list(group) for _, group in groupby(rows, key=lambda row: row.subtask)]
-        if tuple(segment[0].subtask for segment in segments) != expected:
-            raise ValueError(f"{name} run must contain the complete ordered task template")
+        validate_subtask_sequence(
+            [segment[0].subtask for segment in segments], tree.metadata.task,
+            allow_partial=name == "failure", run_name=name,
+        )
+        by_subtask = {segment[0].subtask: segment for segment in segments}
         stages = []
-        for node, raw in zip(tree.subtasks, segments):
+        for node in tree.subtasks:
+            raw = by_subtask.get(node.subtask, [])
             retained = getattr(node, f"{name}_samples")
+            if not raw:
+                if retained:
+                    raise ValueError(f"{name} {node.subtask.value}: unobserved stage must have no retained samples")
+                stages.append(_unobserved_stage(node, thresholds))
+                continue
             if not retained or retained[0] != raw[0] or retained[-1] != raw[-1]:
                 raise ValueError(f"{name} {node.subtask.value}: retained stage endpoints must match raw rows")
             by_time = {row.timestamp: (index, row) for index, row in enumerate(raw)}
@@ -224,7 +267,11 @@ def compression_diagnostics(
                 indices.append(original[0])
             if indices != sorted(set(indices)):
                 raise ValueError("retained timestamps must be strictly increasing with no duplicates")
-            stage = {"subtask": node.subtask.value, **_row_counts(len(raw), len(retained))}
+            stage = {
+                "subtask": node.subtask.value, "observation_status": "observed",
+                "observed_stages": 1, "not_observed_stages": 0,
+                **_row_counts(len(raw), len(retained)),
+            }
             stage["event_retention"] = _event_retention(raw, set(indices), thresholds)
             stage["reconstruction_error"] = _reconstruction_error(node, raw, retained)
             stages.append(stage)
@@ -239,7 +286,8 @@ def compression_diagnostics(
             "event_retention_fraction": "all clipped t-1/t/t+1 raw rows retained / raw adjacent events",
             "neighbor_retention_fraction": "retained unique event-neighbor rows / unique raw event-neighbor rows",
             "empty_event_denominator": "null (no reference events)",
-            "reconstruction": "within-stage alignment against raw observations; linear, previous-value closure, shortest-path SLERP",
+            "unobserved_stages": "zero row/event counts and null reconstruction errors; excluded from reconstruction averages",
+            "reconstruction": "shared observed within-stage time against raw observations; linear, previous-value closure, shortest-path SLERP",
             "quaternion_error": "normalized sign-aligned component differences, not radians",
             "prompt_payload_sizes": "compact sorted-key JSON of leakage-free views without pair_id; UTF-8 bytes and Unicode characters, not model tokens; templates excluded",
         },

@@ -1,7 +1,11 @@
 #!/usr/bin/env python
-"""Build schema-v1 paired BTs plus a raw-reference compression report.
+"""Build paired BTs plus a raw-reference compression report.
 
-Nov. 6 stage: divergence is explicitly uncomputed (null). Output must be a
+Every pair uses explicit observation/comparison states, with empty failure
+samples for any unobserved suffix.
+Observed-node divergence is uncomputed; unobserved nodes are not
+comparable. Parsing does not verify physical outcomes or intentional termination.
+Output must be a
 fresh/empty directory; this prevents stale BTs entering downstream glob readers.
 Invalid pairs are quarantined logically in parse_report.json, without changing
 their source files. Exit codes: 0=all accepted, 1=pair rejections, 2=fatal input

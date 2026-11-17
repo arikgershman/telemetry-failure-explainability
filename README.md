@@ -93,7 +93,7 @@ The viewer uses `mujoco.viewer.launch_passive()` with an explicit simulation loo
 `data/raw/`, `data/processed/`, virtual environments, and model weights are
 ignored; `data/sample/` is explicitly allowed in Git.
 
-## Data contract v1
+## Data contract
 
 Task templates are `pick_up_object` → `approach`, `align`, `grasp`, `lift`, and
 `transport_object` → `maintain_grasp`, `move_along_path`, `reach_target`.
@@ -109,7 +109,7 @@ Failure modes are `position_error`, `orientation_error`,
 - `ee_pos`, `obj_pos`, and `obj_vel` have three components in x/y/z order;
   positions use meters and velocity m/s. Quaternions have four components in
   **w/x/y/z** order. Producers should emit normalized quaternions with consistent
-  signs; v1 validates shape and finiteness, not quaternion normalization.
+  signs; storage validates shape and finiteness, not quaternion normalization.
 - `gripper_state` is normalized closure in [0, 1], with 0=open and 1=closed.
   `gripper_force` and `contact_force` are nonnegative scalar magnitudes in N.
 - Metadata has `pair_id`, `task`, `success_file`, `failure_file`, `failed_subtask`,
@@ -122,8 +122,14 @@ Failure modes are `position_error`, `orientation_error`,
 
 The paired BT nests `metadata`, `overall_goal`, and ordered `subtasks`. Each node
 contains its `subtask`, semantic `metadata` (`subgoal_name`, `action_description`),
-`success_samples`, `failure_samples`, and `deterministic_divergence: null`.
-Null means **not computed**. The reserved divergence schema provides
+`success_samples`, `failure_samples`, observation/end states, and divergence
+availability. Successes cover the complete template; failures cover a nonempty
+ordered prefix. Every expected node remains present, with `failure_samples: []`
+for an unobserved suffix. `failure_observation_status` is `observed` or
+`not_observed`; `failure_segment_end` is `transitioned`, `trace_end`, or null
+for an unobserved stage. These states describe observation, not physical success.
+`divergence_status` distinguishes `uncomputed`, `computed`, and `not_comparable`.
+A null divergence object never means zero. The reserved divergence schema provides
 `first_divergence_timestamp` and per-feature `max_abs_deltas`; an eventual
 implementation must specify alignment and metric semantics before filling it.
 
@@ -161,7 +167,10 @@ than seven samples, or even the whole segment. Short segments keep all available
 rows when k exceeds their interior count.
 
 The compressor keeps separate visits to repeated subtask labels. BT construction
-currently requires each run to contain every task-template subtask once, in
-order, and rejects missing/repeated/reordered segments instead of silently
-aligning them. Success and failure segment durations and sample counts may differ.
-No divergence calculation or time alignment is performed.
+requires complete successes and accepts failure prefixes; skipped interior,
+repeated, and reordered stages are rejected. Samples are matched by subtask name
+under the complete task structure. Numerical alignment uses normalized progress
+for stages followed by a transition and common elapsed time for the final
+observed stage, without extrapolation. Unobserved stages are not comparable.
+Divergence scores are not yet computed. See the [parser handoff](src/telemetry_reasoning/parser/README.md)
+for batch commands, validation, alignment, and tuning details.
