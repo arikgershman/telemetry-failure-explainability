@@ -36,15 +36,42 @@ def test_complete_pair_passes_and_missing_task_is_fatal(tiny_batch):
     assert result['fatal_errors']  # incomplete full release cannot pass freeze
 
 
-def test_partial_trace_is_quarantined_without_changing_source(tiny_batch):
+@pytest.mark.parametrize('last_stage', ['approach', 'grasp'])
+def test_ordered_partial_failure_is_accepted_without_changing_source(tiny_batch, last_stage):
     trace = tiny_batch / 'pick_up_object/failure_000.csv'
     rows = read_telemetry_csv(trace)
-    write_telemetry_csv(trace, [r for r in rows if r.subtask == rows[0].subtask])
+    end = next(i for i, row in enumerate(rows) if row.subtask == last_stage)
+    write_telemetry_csv(trace, rows[:end + 1])
     original = trace.read_bytes()
     result = validate_dataset(tiny_batch)
-    assert result['quarantined_pairs'] == 1
-    assert 'failure: incomplete or unordered subtasks' in result['pairs'][0]['issues']
+    assert result['accepted_pairs'] == 1
+    assert result['quarantined_pairs'] == 0
+    assert result['pairs'][0]['issues'] == []
     assert trace.read_bytes() == original
+
+
+def test_failure_with_skipped_stage_is_quarantined(tiny_batch):
+    trace = tiny_batch / 'pick_up_object/failure_000.csv'
+    rows = read_telemetry_csv(trace)
+    write_telemetry_csv(trace, [
+        row.model_copy(update={'subtask': rows[-1].subtask})
+        if row.subtask == 'align' else row
+        for row in rows if row.subtask in ('approach', 'align')
+    ])
+    result = validate_dataset(tiny_batch)
+    assert result['quarantined_pairs'] == 1
+    assert any('failure run must contain a nonempty ordered prefix' in issue
+               for issue in result['pairs'][0]['issues'])
+
+
+def test_partial_success_is_quarantined(tiny_batch):
+    trace = tiny_batch / 'pick_up_object/success_000.csv'
+    rows = read_telemetry_csv(trace)
+    write_telemetry_csv(trace, [row for row in rows if row.subtask != 'lift'])
+    result = validate_dataset(tiny_batch)
+    assert result['quarantined_pairs'] == 1
+    assert any('success run must contain the complete ordered task template' in issue
+               for issue in result['pairs'][0]['issues'])
 
 
 def test_freeze_rejects_incomplete_release(tiny_batch):

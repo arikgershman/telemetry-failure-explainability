@@ -61,7 +61,7 @@ full_input = tree.to_full_paired()                    # Main; divergence still n
 These are planned interfaces agreed by this task breakdown; each owner implements its side using local fakes until the producer is merged.
 
 1. **Track 1 -> Track 2:** Track 1 provides the completed MuJoCo simulation, nominal controllers, failure injection engine, paired dataset generator, and generated telemetry dataset. `sim/runner.py` exposes `run_episode(*, task, seed, initial_condition_id, control_hook=None) -> (rows, task_succeeded, diagnostics)`. `rows` is `list[RawTelemetryRow]`; `task` is `Task`; `diagnostics` is a JSON-serializable dict with initial-state identity, outcome checks, and timing. The optional hook receives `(timestamp, subtask, nominal_command)` at each 500 Hz control step and returns a modified command. The command dict has `ee_pos` (m), `ee_quat` (w/x/y/z), `gripper_state` (desired closure in [0, 1]), `gripper_force` (N), and `speed_scale` (unitless). These are control targets; measured telemetry is logged separately. Track 2 verifies deterministic replay, identical paired initial states, pre-injection trajectory agreement, perturbation isolation, physical outcomes, and telemetry integrity. The generated dataset is stored under `outputs/dataset/batch_20261030_152125_e5ca72de/`, with separate `pick_up_object/` and `transport_object/` directories containing paired CSVs, `metadata.csv`, `diagnostics.jsonl`, and `summary.json`. The dataset contains 500 accepted pairs per task across 50 initial conditions, balanced across four calibrated failure modes. All five failure mechanisms are implemented, but `excessive_speed` is excluded from the accepted dataset due to insufficient failure reliability.
-2. **Track 2 -> Tracks 3/4:** Track 2 provides a validated, parser-ready dataset by consolidating or indexing the existing task-specific `metadata.csv` files and their referenced success/failure telemetry CSVs, plus `manifest.json` for information absent from `MetadataRow`: initial-condition IDs, train/dev/test split assignments, model/config revisions, outcome checks, and injection timestamps. The final handoff must provide a documented dataset root and metadata layout compatible with the existing CSV I/O and parser interfaces, without modifying the shared schemas. Track 2 verifies unique pair IDs, complete ordered subtask sequences, deterministic replay, and split isolation before freezing the dataset. Keep sidecar fields out of the strict CSV schemas. Track 3 uses the validated CSVs for Behavior Tree construction; Track 4 uses the manifest for grouped evaluation splits and optional onset scoring. The dataset contains four calibrated failure modes, with 125 accepted pairs per mode per task; `excessive_speed` remains a valid `FailureMode` but has no accepted dataset examples.
+2. **Track 2 -> Tracks 3/4:** Track 2 provides a validated, parser-ready dataset by consolidating or indexing the existing task-specific `metadata.csv` files and their referenced success/failure telemetry CSVs, plus `manifest.json` for information absent from `MetadataRow`: initial-condition IDs, train/dev/test split assignments, model/config revisions, outcome checks, and injection timestamps. The final handoff must provide a documented dataset root and metadata layout compatible with the existing CSV I/O and parser interfaces, without modifying the shared schemas. Track 2 verifies unique pair IDs within each task, complete ordered success traces, ordered failure prefixes, deterministic replay, and split isolation before freezing the dataset. Keep sidecar fields out of the strict CSV schemas. Track 3 uses the validated CSVs for Behavior Tree construction; Track 4 uses the manifest for grouped evaluation splits and optional onset scoring. The dataset contains four calibrated failure modes, with 125 accepted pairs per mode per task; `excessive_speed` remains a valid `FailureMode` but has no accepted dataset examples.
 3. **Track 3 -> Tracks 4/5:** `pair_<pair_id>_bt.json` files validated as `PairedBehaviorTree`, using one canonical contract for complete and partial failure traces. After divergence runs, observed nodes have `divergence_status="computed"` with a `DeterministicDivergence`; unchanged comparisons have zero deltas and a null first-divergence timestamp. Unobserved nodes retain empty failure samples, `divergence_status="not_comparable"`, and a null object. Observed nodes with null objects remain explicitly uncomputed. Track 5 may populate a deep copy of the sample with hand-checked divergence values and matching statuses for tests while Track 3 works.
 4. **Tracks 4/5 -> evaluator:** one JSONL prediction per `(pair_id, model_variant)`, with fields `pair_id`, `model_variant` (`baseline_1`, `baseline_2`, `baseline_3`, `main`), `predicted_failure_mode` (`FailureMode` value or null), `predicted_subtask` (`Subtask` value or null), `explanation` (string), `evidence` (list of `{subtask, timestamp, feature, value}` records using `TelemetryFeature` values), `status` (`ok`, `abstain`, `error`), and `backend` (`rules`, `hf`, `stub`). Evidence refers to observed failure samples, with `value` a finite scalar or vector matching that feature's `RawTelemetryRow` shape; paired/divergence comparisons may also be described in the explanation. Track 4 implements validation in `eval/contracts.py`; Track 5 can emit this documented format before that module lands. Additional runtime/token/config provenance belongs in a sibling run-manifest JSON. Stub outputs are for plumbing tests and must never be reported as LLM results.
 
@@ -137,7 +137,7 @@ outputs/dataset/batch_20261030_152125_e5ca72de/
 
 **Owner / name:** Suhani Chaudhary
 
-**Status (Nov. 10):** validation, splitting, and checksum tooling implemented and tested. Final dataset freeze is blocked: 390 of 1,000 failure traces omit required later subtasks. Original telemetry and shared schemas are unchanged.
+**Status (Nov. 17):** all 1,000 released pairs pass parser acceptance with ordered partial failure traces supported. Validation, grouped splitting, and checksum tooling are implemented. Producer provenance, independent failure-outcome verification, and the final dataset freeze remain pending.
 
 **Scope:** validate reproducibility, physical outcomes, telemetry integrity, and parser compatibility of the completed simulation dataset. Establish leakage-free dataset splits, automated checks, and a frozen dataset manifest for downstream Behavior Tree conversion and evaluation.
 
@@ -150,14 +150,14 @@ outputs/dataset/batch_20261030_152125_e5ca72de/
 
 - **Implemented:** `src/telemetry_reasoning/sim/audit_robot_dataset.py`, `validate_dataset.py`, `split_robot_dataset.py`, and `freeze_robot_dataset.py` for strict validation, grouped splitting, and checksum generation/verification.
 - **Implemented tests:** `tests/test_dataset_validation.py`, `test_dataset_acceptance.py`, `test_dataset_splits.py`, `test_dataset_manifest.py`, `test_dataset_retries.py`, `test_failure_validation.py`, and opt-in `test_sim_reproducibility.py`.
-- **Pending release artifact:** final dataset `manifest.json` and checksum inventory, generated only after the dataset passes acceptance.
+- **Pending release artifact:** final dataset `manifest.json` and checksum inventory.
 - **Read/reuse:** `src/telemetry_reasoning/sim/runner.py`, `src/telemetry_reasoning/sim/failures.py`, `src/telemetry_reasoning/sim/dataset.py`, `src/telemetry_reasoning/parser/compressor.py`, and shared schemas/I/O.
 
 ### Input & output contracts
 
 - Input: the completed dataset under `outputs/dataset/batch_20261030_152125_e5ca72de/`, including paired telemetry CSVs, task-specific metadata, diagnostics, calibration configurations, and initial-condition IDs.
 - Output: validated paired telemetry, deterministic train/dev/test assignments, reproducibility and compatibility results, `manifest.json`, and file checksums.
-- Keep the existing `RawTelemetryRow` and `MetadataRow` schemas unchanged. Store split assignments, simulation provenance, and additional validation information in the manifest. Accepted traces must satisfy the parser's complete ordered subtask requirements without fabricating missing observations.
+- Keep the existing `RawTelemetryRow` and `MetadataRow` schemas unchanged. Store split assignments, simulation provenance, and additional validation information in the manifest. Success traces require the full ordered task sequence. Failure traces may end during any stage as long as the observed stages form a nonempty ordered prefix. Unobserved stages have no failure samples.
 
 ### Definition of Done
 
@@ -167,31 +167,28 @@ outputs/dataset/batch_20261030_152125_e5ca72de/
 - [x] Verify real nominal success across all 50 initial conditions per task at seed 723. Independently check final pickup object rise exceeds 0.12 m and transport XY placement is within 0.04 m of the expected 0.15 m displacement.
 - [x] Check all released traces using canonical CSV validation, including logging cadence, schema, ordered stages, paired joint dimensions, quaternion normalization/sign continuity, and metadata file-reference reuse. Inspect units and measured force sources in the logger; this does not independently calibrate force accuracy.
 - [ ] Independently verify physical outcomes for all stored failure runs using machine-readable outcome measurements from the producer; controller outcome strings alone are insufficient.
-- [x] Audit all 1,000 pairs against the complete ordered subtask requirement and run `build_paired_bt()` on pairs that pass the preceding checks. Logically quarantine 390 incompatible pairs in the report without changing source files.
-- [ ] Replace incompatible pairs and pass full-release coverage/parser acceptance before handoff.
-- [x] Implement deterministic train/dev/test splits grouped by initial condition (35/5/10 per task; 700/100/200 total pairs), keeping paired and repeated executions together and checking task/failure-mode coverage, duplicate diagnostics, and split isolation. Revalidate after replacement data arrives.
+- [x] Use `build_paired_bt()` as the acceptance gate for stage coverage. Test that ordered partial failures pass without changing source CSVs and that skipped stages and incomplete success traces are rejected.
+- [x] Pass full-release coverage and parser acceptance for all 1,000 pairs. Each task has 500 pairs across 50 initial conditions and 125 pairs per calibrated mode.
+- [x] Implement deterministic train/dev/test splits grouped by initial condition (35/5/10 per task and 700/100/200 total pairs), keeping paired and repeated executions together and checking task/failure-mode coverage, duplicate diagnostics, and split isolation.
 - [x] Add automated reset/replay, failure-injection boundary/isolation, dataset validation, split, and checksum tests. Record the exclusion of `excessive_speed` from the accepted dataset due to insufficient failure reliability.
 - [x] Add 12 CPU-only generator retry tests using fake episode results: inactive injection, injected success, and empty telemetry rejection; preserved condition/mode and paired inputs; accepted-only CSV/diagnostic output; attempt exhaustion and partial-run reporting; and immediate abort for failed/incomplete nominal episodes. These exercise the real generator and CSV I/O without MuJoCo or model assets.
-- [ ] Coordinate the runner's missing `control_hook` interface and add hook acceptance tests. Extend retry tests to cover rejection of partial injected traces when the producer's complete-stage gate is implemented.
+- [ ] Coordinate the runner's missing `control_hook` interface and add hook acceptance tests.
 - [x] Implement manifest/checksum generation and verification, including changed/missing/unexpected files, same-size corruption, unsafe inventory paths, source fingerprints, split indices, validation records, and explicit verification limitations. Refuse to freeze an incompatible release.
-- [ ] Obtain exact producer/model/config revisions and task time origins, regenerate acceptance evidence and splits, then generate and verify the final manifest/checksum inventory and freeze the validated dataset.
+- [ ] Obtain exact producer/model/config revisions and task time origins, regenerate the release splits, then generate and verify the final manifest/checksum inventory and freeze the validated dataset.
 
 ### Validation results and current blockers
 
-Detailed generated report: `runs/track2/track2-audit.json`. The audit exits **1** for the current release; the earlier audit's empty `issues` field did not establish parser readiness because it allowed ordered prefixes.
+The release audit exited **0**. The detailed report is in `runs/track2-partial-audit.json`.
 
 | Task | Released pairs | Parser-compatible pairs | Quarantined pairs |
 | --- | ---: | ---: | ---: |
-| `pick_up_object` | 500 | 384 | 116 |
-| `transport_object` | 500 | 226 | 274 |
-| **Total** | **1,000** | **610** | **390** |
+| `pick_up_object` | 500 | 500 | 0 |
+| `transport_object` | 500 | 500 | 0 |
+| **Total** | **1,000** | **1,000** | **0** |
 
-Every quarantine is an incomplete failure-stage sequence. All traces pass the canonical CSV reader, but 390 cannot satisfy the current complete-stage BT contract. The 610 compatible pairs are not a balanced replacement release and must not be frozen as the required full dataset.
-
-- **Selected Track 2 plus parser checks:** 70 passed, including 12 new fake-episode generator retry tests. The existing complete-stage producer blocker remains unresolved.
-- **Real MuJoCo checks:** nominal replay/reset for both tasks; nominal success and object-motion checks across all 100 task/condition combinations; injected replay/failure/activation for four representative modes per task all passed. Menagerie was initialized at pinned revision `f3b6013629c7b94f8ee93fd977b161fa8350f9bc`.
-- **Full suite before the final additional regressions:** 304 passed, 2 skipped, 2 failures outside Track 2. Track 3's `test_bt_pipeline` exposes LF-text hashing versus CRLF file bytes on Windows. Track 4's `test_evaluation` expects four labels while the shared enum correctly includes `excessive_speed` as a fifth. These still need fixes by their owners.
-- **Track 1 follow-up:** replace 116 pickup and 274 transport partial traces with real complete-stage failed executions while retaining 500 pairs/task, 50 conditions/task, 10 pairs/condition, and 125 pairs/mode/task. `dataset.generate()` currently accepts nonempty prefixes and records `failure_trace_is_partial`; add a complete-stage acceptance gate and recalibrate as needed. Do not fabricate missing stages or weaken schema v1.
+- All 130 selected Track 2 and parser tests passed.
+- The default full suite reported 718 passed, 23 failed, and 6 skipped. Failures were in Track 3 (one parser output hash), Track 4 (one failure-mode vocabulary mismatch), and Track 5 (21 LLM, CLI, replay, and prompt cases). The six opt-in Track 2 MuJoCo cases were skipped.
+- Earlier real MuJoCo runs passed nominal replay/reset for both tasks, nominal success and object-motion checks across all 100 task/condition combinations, and injected replay/failure/activation for four representative modes per task. Menagerie was pinned to `f3b6013629c7b94f8ee93fd977b161fa8350f9bc`. On the latest opt-in rerun, Windows Application Control blocked a native MuJoCo module during import, so all six cases stopped before reaching simulation assertions.
 - **Producer provenance/time follow-up:** record task onset in simulator seconds, exact generator/model/config revisions, and machine-readable physical outcome measurements. Current source hashes cannot establish the revision that generated old CSVs.
 - **Runner interface follow-up:** current `run_episode()` accepts `FailureConfig` and returns `EpisodeResult`; the planned `control_hook` and tuple return contract has not been implemented. Coordinate the API before writing hook acceptance tests.
 
@@ -203,16 +200,15 @@ Split entries record task, pair ID, initial condition, failure mode, and batch-r
 
 The logger uses generalized actuator forces for joint torques/finger force, measured finger closure for gripper state, and MuJoCo contact normal forces involving the cube for `contact_force`. Units follow the shared SI schema, with w/x/y/z quaternions; quaternion norm checks use absolute tolerance `1e-6`.
 
-Existing root-level `dataset_manifest.json`, `dataset_splits.json`, and `dataset_audit_report.json` are earlier work preserved unchanged. They do not certify parser readiness; regenerate acceptance evidence before using them. Do not mark Track 2 complete or publish a frozen release until the remaining gates pass.
+The current parser-readiness evidence is in `runs/track2-partial-audit.json`. The root-level `dataset_manifest.json`, `dataset_splits.json`, and `dataset_audit_report.json` predate this audit. Final handoff requires the remaining checks and a verified release manifest.
 
 ### Verification commands (PowerShell, repository root)
 
 ```powershell
 $python = '.\.venv\Scripts\python.exe'
 New-Item -ItemType Directory -Path runs -Force | Out-Null
-& $python -m pytest tests/test_dataset_acceptance.py tests/test_dataset_retries.py tests/test_failure_validation.py tests/test_dataset_manifest.py tests/test_dataset_splits.py tests/test_parser.py -q -p no:cacheprovider --basetemp runs/track2-unit-temp
-& $python -m telemetry_reasoning.sim.audit_robot_dataset outputs/dataset/batch_20261030_152125_e5ca72de --report runs/track2-audit.json
-# Audit exit 1 is expected until the partial traces are replaced.
+& $python -m pytest tests/test_dataset_acceptance.py tests/test_dataset_validation.py tests/test_dataset_retries.py tests/test_failure_validation.py tests/test_dataset_manifest.py tests/test_dataset_splits.py tests/test_parser.py tests/test_partial_traces.py -q -p no:cacheprovider --basetemp runs/track2-partial-test-temp
+& $python -m telemetry_reasoning.sim.audit_robot_dataset outputs/dataset/batch_20261030_152125_e5ca72de --report runs/track2-partial-audit.json
 git submodule update --init --depth 1 assets/mujoco_menagerie
 $env:TRACK2_REAL_SIM = '1'
 & $python -m pytest tests/test_sim_reproducibility.py -q -p no:cacheprovider --basetemp runs/track2-real-temp
@@ -222,7 +218,7 @@ Remove-Item Env:TRACK2_REAL_SIM
 
 Default tests skip real physics unless explicitly enabled; dataset-dependent tests skip if the release is absent. Use a fresh temporary output path when needed. A generated split file alone does not establish dataset acceptance.
 
-Only after the repaired release passes acceptance:
+After the remaining release checks are complete, generate and verify the manifest.
 
 ```powershell
 & $python -m telemetry_reasoning.sim.freeze_robot_dataset outputs/dataset/batch_20261030_152125_e5ca72de --output outputs/dataset/batch_20261030_152125_e5ca72de/manifest.json
@@ -295,9 +291,9 @@ Expected columns are subtask, retained success count, retained failure count, an
 - [x] Added complete `configs/parser.yaml`, preserving the existing defaults and byte-identical sample output. All divergence objects remain explicitly uncomputed. Settings are provisional, not calibrated on the real dataset.
 - [x] Added raw-reference compression diagnostics: per-stage counts, compression ratios, fixed-reference event-center/neighborhood retention, reconstruction errors for every feature, and leakage-free JSON payload sizes in characters/UTF-8 bytes (not model tokens).
 - [x] Implemented `scripts/tune_compression.py` and grouped-split validation. The sweep checks all manifest groups before opening telemetry, reads only the requested train/dev split, keeps reference-event thresholds fixed across candidates, and never changes configuration automatically. A reproducible synthetic demonstration covers both tasks, three seeds, `k=[0,2,5]`, and threshold scales `[0.5,1,2]`; this verifies the tools, not real-data calibration.
-- [x] Ran the parser against all 1,000 pairs in Gili's supplied `dataset_v1.zip`: pickup **384 written / 116 rejected**, transport **226 written / 274 rejected**. All 390 rejections are incomplete failure-stage sequences. The 610 compatible pairs retain 110,283 of 448,309 raw observations and all 71,708 fixed-reference feature-event neighborhoods. All output BTs validate; archive/source hashes are unchanged. Task outputs are separate because task-local pair IDs collide.
+- [x] Before partial-trace support, ran the parser against all 1,000 pairs in Gili's supplied `dataset_v1.zip`: pickup **384 written / 116 rejected**, transport **226 written / 274 rejected**. All 390 rejections are incomplete failure-stage sequences. The 610 compatible pairs retain 110,283 of 448,309 raw observations and all 71,708 fixed-reference feature-event neighborhoods. All output BTs validate; archive/source hashes are unchanged. Task outputs are separate because task-local pair IDs collide.
 - [x] Verified existing Track 4 baseline consumption and all **152 Track 3 tests** with warnings treated as errors. The full suite has **279 passed / 1 pre-existing Track 4 failure**: `test_label_vocabularies_match_shared_schemas`, because the evaluator vocabulary omits the shared `excessive_speed` mode. Other tracks' code is unchanged.
-- [ ] Calibrate and select production compression settings using Track 2's validated train/dev splits. The archive has no split manifest; the compatible subset is not balanced and contains no transport `inadequate_grip_strength` examples. Track 2 must resolve partial traces and freeze grouped splits before real tuning/final conversion.
+- [ ] Calibrate and select production compression settings using Track 2's validated train/dev splits. The full release passes parser acceptance. Real tuning and final conversion await the frozen grouped split manifest.
 
 Handoff and commands: `src/telemetry_reasoning/parser/README.md`. Local generated evidence: `runs/track3-nov06/verification.json`, `runs/track3-nov06/archive-full-compatibility/verification.json`, and `runs/track3-nov06/synthetic-tuning/SYNTHETIC-evidence.json` (ignored outputs, not versioned fixtures).
 

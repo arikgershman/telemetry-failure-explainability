@@ -1,6 +1,5 @@
 """Strict, read-only Track 2 acceptance gate; no simulator imports required."""
 
-from itertools import groupby
 from collections import Counter
 import json
 from pathlib import Path
@@ -10,7 +9,6 @@ import numpy as np
 from telemetry_reasoning.config import CompressionConfig
 from telemetry_reasoning.io import read_metadata_csv, read_telemetry_csv
 from telemetry_reasoning.parser.compressor import build_paired_bt
-from telemetry_reasoning.schemas import TASK_SUBTASKS
 
 
 def validate_dataset(batch: Path) -> dict:
@@ -63,9 +61,6 @@ def validate_dataset(batch: Path) -> dict:
                         raise ValueError("path escapes task directory")
                     rows = read_telemetry_csv(path)
                     traces[kind] = rows
-                    stages = tuple(label for label, _ in groupby(r.subtask for r in rows))
-                    if stages != TASK_SUBTASKS[meta.task]:
-                        issues.append(f"{kind}: incomplete or unordered subtasks")
                     for field in ("ee_quat", "obj_quat"):
                         values = np.asarray([getattr(r, field) for r in rows])
                         if not np.allclose(np.linalg.norm(values, axis=1), 1, atol=1e-6, rtol=0):
@@ -109,6 +104,7 @@ def validate_dataset(batch: Path) -> dict:
                             issues.append(f"first pre-injection state mismatch: {field}")
                 if not issues:
                     try:
+                        # The parser owns stage coverage rules for both runs.
                         build_paired_bt(meta, folder, CompressionConfig())
                     except (OSError, ValueError) as exc:
                         issues.append(f"BT incompatibility: {exc}")
