@@ -1,0 +1,27 @@
+# Explicit Apple Silicon execution profile; all variants use these same settings.
+# Requires a Transformers runtime with MetalConfig plus compatible kernels.
+# Model/tokenizer and Metal kernel loading can contact Hugging Face. The model
+# checkpoint stays identical to configs/llm.yaml; only compute settings differ.
+# This profile is refused on a 16 GiB host before importing torch. The fixed
+# loading policy requires >=32 GiB host RAM for MPS, including on-the-fly Metal
+# quantization, and enforces a bounded allocator. Passing admission does not
+# guarantee a workload fits. No local retry or allocator-limit bypass is safe.
+# Measurable available RAM is required; unknown headroom also refuses loading.
+# Once weights are resident, each request reserves its KV estimate plus 4 GiB
+# workspace; the initial full checkpoint-loading budget is not reserved twice.
+llm:
+  model_id: meta-llama/Llama-3.1-8B-Instruct
+  revision: 0e9e39f249a16976918f6564b8830bc894c89659
+  device: mps
+  dtype: float16
+  context_window_tokens: 32768
+  max_new_tokens: 1024
+  batch_size: 1
+  seed: 723
+  local_files_only: false
+  quantization: metal4
+  quantization_group_size: 64
+  # Guard the kernel selected by the installed Transformers integration. A
+  # different or unidentifiable revision fails before loading model weights.
+  metal_kernel_revision: 6ed0fc4eff016df00830678eb96acb92a6a8f351
+  cache_dir: ../weights/hub
