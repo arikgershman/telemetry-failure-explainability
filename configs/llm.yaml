@@ -15,6 +15,9 @@ llm:
   max_new_tokens: 512
   batch_size: 1
   seed: 723
+  # Bare JSON remains the default; offline replay may explicitly select
+  # json_or_fenced_v1 while retaining the original run and its strict status.
+  response_policy: strict_json_v1
   local_files_only: true
   quantization: none
   quantization_group_size: 64

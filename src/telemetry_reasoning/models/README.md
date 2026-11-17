@@ -5,9 +5,16 @@ views. The Nov. 6 extension supports batched HF inference, records raw model
 completions, validates structured predictions against observed telemetry, and
 adds experimental Metal quantization support. The attempted full model load on
 the local 16 GB Apple M4 made the laptop unresponsive and required a hard
-reboot. That machine is unsupported for automatic full-model loading. Real HF
-acceptance for Baselines 2 and 3 remains incomplete and now requires suitable
-external compute; no local full-model retry is authorized.
+reboot. That machine is unsupported for automatic full-model loading. The
+November 16 Alienware run generated real HF responses for both baselines;
+CPU-only response revalidation handles its single JSON code fence under an
+explicit, versioned policy. The original strict run remains preserved as
+incomplete. No local full-model retry is needed or authorized.
+
+The Nov. 6 milestone is complete under the recorded response policy. See the
+[acceptance receipt](../../../docs/track5-nov06-acceptance.md) for hashes,
+verification commands, and explanation-quality limitations. No further GPU work
+is required for that milestone.
 
 The stub checks orchestration and contracts; it does not diagnose failures or
 establish LLM accuracy. A real main-model run, training-data formatting,
@@ -63,8 +70,9 @@ inference is viable on this laptop. Preserve the existing configuration,
 dependency pins, and cache for audit without reloading the model. Current work
 is limited to source/documentation inspection and CPU/offline validation that
 does not import Torch, access the GPU, download files, or run model inference.
-The Nov. 6 real-HF milestone remains open until both baselines complete and
-validate on appropriate external compute using identical settings.
+The subsequent Alienware generation used identical model/settings for both
+baselines. Its saved responses can be revalidated on the Mac without opening
+weights, importing model runtimes, or allocating GPU memory.
 
 ## Model identity and reproducibility
 
@@ -138,6 +146,22 @@ failure sample's timestamp and numeric value. A claimed `ok` prediction needs
 both labels and supporting evidence. Abstentions retain null labels; errors
 retain null labels and empty evidence. No response repair invents a diagnosis.
 
+`response_policy` is separate from generation settings. `strict_json_v1` is
+the default and the implicit policy for older manifests without this field.
+`json_or_fenced_v1` accepts bare JSON or one whole-response lowercase JSON code
+fence, with LF/CRLF marker lines and optional surrounding JSON whitespace.
+It removes only the marker lines; the enclosed content must pass the same
+duplicate-key, finite-number, schema, task, and exact observed-evidence checks.
+It does not search prose for JSON, combine multiple objects/blocks, repair
+syntax, change labels, or rewrite explanations. Prompts still request bare
+JSON, and the selected policy applies uniformly to every variant.
+
+Every new completion retains its exact raw text/hash plus
+`response_normalization` containing the policy, envelope type, and SHA-256 of
+the text submitted to the strict JSON parser. Live inference records the policy
+in its config and manifest. Independent acceptance rechecks normalization as
+well as rebuilding prompts and reparsing responses.
+
 The CLI writes a fresh output directory containing:
 
 - `<variant>.jsonl`: one validated prediction or explicit error per pair/variant.
@@ -152,6 +176,40 @@ prediction is an error, and 2 for configuration, input, or publication errors.
 Selecting `--backend hf` alone does not establish real-model acceptance. A
 passing inference smoke requires real generation and validated results for
 every requested pair/variant; it does not establish diagnostic accuracy.
+
+## Offline revalidation of saved HF responses
+
+`scripts/revalidate_llm.py` reads a transferred run bundle containing
+`config.yaml`, `input/pair_<id>_bt.json`, and `inference/` with the original
+manifest, prediction JSONL, and exact raw completions. It verifies parent
+artifact/config/input hashes, request identities, generation metadata, and
+prompt/template compatibility before applying one declared response policy.
+It never instantiates a backend, imports model runtimes, downloads weights, or
+uses a GPU. Changing the prompt, model, decoding, precision, or observations
+requires new inference instead of this replay.
+
+Run from the repository root, choosing an absent or empty output directory:
+
+```bash
+PYTHONPATH=src HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 .venv/bin/python scripts/revalidate_llm.py \
+  --bundle-dir runs/alienware-import-20261116T215259Z \
+  --response-policy json_or_fenced_v1 \
+  --output-dir runs/track5-nov06/accepted-baselines
+```
+
+Derived artifacts preserve raw completion text, generation provenance,
+token/timing records, parent hashes, and original validation outcomes. New
+validator source hashes, normalization records, and acceptance describe the
+offline operation separately, with zero newly generated requests. The source
+bundle and its original strict acceptance are never overwritten. Stub outputs
+cannot establish real-HF acceptance, and unsupported evidence or malformed JSON
+remain errors. Exit codes are 0 for accepted diagnoses/abstentions, 1 for
+response errors, and 2 for invalid input/provenance or publication failures.
+
+Passing this smoke on one mock pair establishes the inference/output contract,
+not a dataset accuracy estimate or causal explanation quality. Preserve model
+prose unchanged and record human review findings separately from format,
+label, and structured-evidence validation.
 
 ## Offline CPU smoke
 
@@ -294,12 +352,12 @@ and [commit-pinned download guide](https://huggingface.co/docs/huggingface_hub/e
 remain references for a separately authorized external run. Do not place tokens
 in YAML, source, command arguments, or saved manifests.
 
-Actual HF acceptance requires suitable external compute and separate
-provisioning authorization. Before that later run, review the full load and
-inference peak-memory budget, the checkpoint/runtime/kernel identity, and
-identical settings for both baselines. Keep raw completions and validated
-predictions together with provenance. No local retry is a prerequisite for
-finishing the current safe work.
+New HF generation requires suitable external compute. The authorized
+November 16 Alienware run supplied the Nov. 6 baseline responses. For future
+runs, review the full load/inference memory budget, checkpoint/runtime identity,
+and identical settings across variants. Keep raw completions and validated
+predictions together with provenance. No local full-model retry is a
+prerequisite for offline revalidation or later development.
 
 ## Historical Apple Silicon environment
 
@@ -337,20 +395,20 @@ A matching kernel revision and source hash establish identity, not a safe
 memory envelope. Retain the existing expected kernel SHA for audit without
 fetching a replacement or bypassing the resource guard.
 
-## Future external execution and later main-model acceptance
+## Verified external environment and later main-model acceptance
 
-The user identified a future lab Alienware PC with an NVIDIA 5090. Its operating
-system, physical host RAM, actual GPU memory, driver, and compatible Torch/CUDA
-build have not been checked. The GPU name alone is not a fit or compatibility
-guarantee. No GPU probe, model transfer, installation, or run is part of the
-current safe local work.
+The November 16 lab run verified Ubuntu 24.04, an RTX 5090 with approximately
+31.34 GiB usable GPU memory, approximately 62.25 GiB OS-reported host RAM,
+driver 595.99.02, Torch 2.14.1+cu130, and Transformers 5.23.0. Both baseline
+generations ended at EOS in approximately 15 seconds total. Five-second GPU
+samples recorded up to 21,213 MiB used; sampled values do not establish the
+exact peak. Hardware and runtime checks must be repeated for future workloads.
 
-The future lab workflow must support the machine's actual Windows or Linux
-environment. The macOS dependency file records the failed Mac experiment; it
-is not a CUDA installation lock. Verify host/GPU memory and runtime support
-when the machine is available, then review a dedicated CUDA configuration.
-Use the exact same pinned Llama checkpoint and settings for both baselines,
-and keep those outputs separate from the failed Mac attempt.
+Its dedicated configuration used CUDA/BF16, no quantization, cache-only loading,
+32,768 total tokens, 1,024 output tokens, batch size 1, and seed 723 for both
+baselines. The Mac dependency file remains an incident record, not a CUDA lock.
+Keep lab results separate from the failed Mac attempt and derived response
+validation separate from the original generation.
 
 The following commands are a future handoff for an authorized, adequately
 provisioned CUDA environment with the project installed. They use plain Python
@@ -366,7 +424,8 @@ run must confirm those choices against the actual hardware and supply a
 separately reviewed YAML if loading/cache settings need to differ. All
 resource, runtime, and model identity checks precede that run. No lighter-model
 run is needed for current local validation: stub and fake-HF tests cover the
-pipeline while exact Llama-3.1-8B acceptance remains pending.
+pipeline without allocating model memory. The completed lab generation and
+offline replay supply Nov. 6 evidence; the main-model milestone remains open.
 
 For the main variant, use Track 3's parser output with genuinely computed
 observed-stage divergence, then run all three variants together into a new

@@ -37,6 +37,7 @@ from telemetry_reasoning.models.llm import (
     capabilities,
     load_llm_config,
     parse_response,
+    response_normalization,
     run_inference,
 )
 from telemetry_reasoning.models.prompts import DEFAULT_TEMPLATE_DIR, TEMPLATE_FILENAMES, build_prompt
@@ -149,6 +150,10 @@ def execution_summary(
     expected = {(tree.metadata.pair_id, variant) for tree in trees for variant in variants}
     predicted = {(record["pair_id"], record["model_variant"]): record for record in predictions}
     generated = {(record["pair_id"], record["model_variant"]): record for record in completions}
+    # Manifests created before a policy field existed used strict bare JSON.
+    response_policy = manifest.get("response_policy", manifest.get("config", {}).get(
+        "response_policy", "strict_json_v1"))
+    policy_declared = "response_policy" in manifest or "response_policy" in manifest.get("config", {})
     valid = set()
     for tree in trees:
         for variant in variants:
@@ -167,7 +172,14 @@ def execution_summary(
                         completion["completion_sha256"] != hashlib.sha256(
                             completion["text"].encode("utf-8")).hexdigest()):
                     continue
-                reparsed = parse_response(completion["text"], prompt, tree.metadata.pair_id, selected_backend)
+                if ((policy_declared or "response_normalization" in completion) and
+                        completion.get("response_normalization") != response_normalization(
+                            completion["text"], response_policy)):
+                    continue
+                reparsed = parse_response(
+                    completion["text"], prompt, tree.metadata.pair_id, selected_backend,
+                    response_policy=response_policy,
+                )
                 if reparsed == record:
                     valid.add(key)
             except (KeyError, TypeError, ValueError, OSError):

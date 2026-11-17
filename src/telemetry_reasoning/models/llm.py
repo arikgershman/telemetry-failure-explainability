@@ -19,6 +19,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import re
 import time
 from typing import Annotated, Any, Literal, Protocol, Sequence
 
@@ -32,6 +33,8 @@ from telemetry_reasoning.schemas import FailureMode, PairedBehaviorTree, Subtask
 
 MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
 MODEL_REVISION = "0e9e39f249a16976918f6564b8830bc894c89659"
+ResponsePolicy = Literal["strict_json_v1", "json_or_fenced_v1"]
+RESPONSE_POLICIES = ("strict_json_v1", "json_or_fenced_v1")
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / "configs/llm.yaml"
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 GIB = 1024 ** 3
@@ -173,6 +176,7 @@ class LLMConfig(BaseModel):
     max_new_tokens: PositiveInt = 512
     batch_size: Annotated[int, Field(strict=True, gt=0, le=128)] = 1
     seed: Annotated[int, Field(strict=True, ge=0, lt=2**32)] = 723
+    response_policy: ResponsePolicy = "strict_json_v1"
     local_files_only: Annotated[bool, Field(strict=True)] = True
     quantization: Literal["none", "metal4"] = "none"
     quantization_group_size: Literal[64] = 64
@@ -653,16 +657,47 @@ def _equal_measurement(actual: Any, claimed: Any) -> bool:
     return math.isclose(actual, claimed, rel_tol=1e-9, abs_tol=1e-9)
 
 
-def parse_response(text: str, prompt: Prompt, pair_id: str, backend: str) -> dict[str, Any]:
+def _response_payload(text: str, policy: ResponsePolicy) -> tuple[str, str]:
+    """Recognize a complete transport envelope, never search or repair JSON.
+
+    Legacy callers retain the bare-JSON contract. The opt-in envelope policy
+    permits only lowercase ``json`` fences occupying the entire response, with
+    LF or CRLF marker lines and optional surrounding JSON whitespace. The
+    enclosed bytes still undergo every original JSON/schema/evidence check.
+    """
+    if policy not in RESPONSE_POLICIES:
+        raise ValueError(f"unsupported response policy: {policy!r}")
+    if not isinstance(text, str):
+        raise TypeError("model completion must be a string")
+    if policy == "json_or_fenced_v1":
+        match = re.fullmatch(r"```json\r?\n(?P<body>[\s\S]*?)\r?\n```", text.strip(" \t\r\n"))
+        if match is not None:
+            return match.group("body"), "json_code_fence"
+    return text, "none"
+
+
+def response_normalization(text: str, policy: ResponsePolicy) -> dict[str, str]:
+    """Describe envelope handling without changing or discarding raw text."""
+    payload, envelope = _response_payload(text, policy)
+    return {"policy": policy, "envelope": envelope,
+            "normalized_text_sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest()}
+
+
+def parse_response(
+    text: str, prompt: Prompt, pair_id: str, backend: str,
+    *, response_policy: ResponsePolicy = "strict_json_v1",
+) -> dict[str, Any]:
     """Require one strict JSON object and citations to available failure rows.
 
-    No repair, label guessing, code-fence extraction, or success-side evidence
+    A separately declared policy may unwrap one whole-response JSON fence.
+    No repair, label guessing, prose extraction, or success-side evidence
     substitution occurs. Unsupported responses become errors in the harness.
     """
     if backend not in ("stub", "hf"):
         raise ValueError("unsupported inference backend")
+    payload, _ = _response_payload(text, response_policy)
     response = _ModelResponse.model_validate(json.loads(
-        text, parse_constant=_reject_constant, object_pairs_hook=_unique_keys,
+        payload, parse_constant=_reject_constant, object_pairs_hook=_unique_keys,
     ))
     allowed = TASK_SUBTASKS[Task(prompt.payload["task"])]
     if response.predicted_subtask is not None and response.predicted_subtask not in allowed:
@@ -728,6 +763,7 @@ def run_inference(
         "model": {"id": config.model_id, "revision": config.revision, "type": "instruction_tuned"},
         "tokenizer": {"id": config.model_id, "revision": config.revision},
         "config": config_value, "config_sha256": _hash(config_value),
+        "response_policy": config.response_policy,
         "decoding": {"do_sample": False, "num_beams": 1, "batch_size": effective_batch_size,
                      "seed": config.seed, "max_new_tokens": config.max_new_tokens},
         "python": platform.python_version(), "packages": _versions(),
@@ -834,6 +870,7 @@ def run_inference(
                     "input_tokens": count, "output_tokens": result.output_tokens if valid_output_count else None,
                     "token_count_method": result.token_count_method if valid_method else None,
                     "finish_reason": result.finish_reason if valid_finish_reason else None,
+                    "response_normalization": response_normalization(result.text, config.response_policy),
                 }
                 request.update(completion_sha256=digest,
                                finish_reason=result.finish_reason if valid_finish_reason else None)
@@ -844,7 +881,10 @@ def run_inference(
                     completions[index]["metadata_error_fields"] = metadata_errors
                     raise ValueError("backend returned invalid generation metadata: " + ", ".join(metadata_errors))
                 request.update(output_tokens=result.output_tokens, token_count_method=result.token_count_method)
-                predictions[index] = parse_response(result.text, prompt, request["pair_id"], backend.name)
+                predictions[index] = parse_response(
+                    result.text, prompt, request["pair_id"], backend.name,
+                    response_policy=config.response_policy,
+                )
             except Exception as exc:
                 fail(index, exc)
             finish(index, request_start)
@@ -852,4 +892,9 @@ def run_inference(
     manifest.update(backend_provenance=backend.provenance(), runtime_s=time.perf_counter() - started,
                     status_counts=dict(Counter(record["status"] for record in predictions)),
                     n_inputs=len(trees), n_predictions=len(predictions), n_completions=len(completions))
+    manifest["response_processing"] = {
+        "policy": config.response_policy, "raw_text_preserved": True,
+        "fenced_requests": sum(record["response_normalization"]["envelope"] == "json_code_fence"
+                               for record in completions.values()),
+    }
     return InferenceRun(tuple(predictions), manifest, tuple(completions[index] for index in sorted(completions)))

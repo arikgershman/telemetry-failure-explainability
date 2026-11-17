@@ -12,6 +12,7 @@ import pytest
 from scripts import run_llm
 from telemetry_reasoning.models import llm
 from telemetry_reasoning.models.llm import Generation, LLMConfig, run_inference
+from telemetry_reasoning.models.prompts import build_prompt
 from telemetry_reasoning.schemas import PairedBehaviorTree
 
 
@@ -281,6 +282,49 @@ def test_stub_with_valid_predictions_remains_synthetic(tmp_path):
     assert manifest["execution"]["hf_generation_completed"] is False
     assert manifest["acceptance"]["status"] == "synthetic"
     assert manifest["acceptance"]["nov6_baselines_covered"] is False
+
+
+@pytest.mark.parametrize("tamper", ["policy", "envelope", "normalized_hash", "missing"])
+def test_acceptance_checks_declared_response_normalization(tamper):
+    tree = PairedBehaviorTree.model_validate_json((SAMPLE / "pair_000_bt.json").read_bytes())
+    config = LLMConfig(response_policy="json_or_fenced_v1")
+    prompt = build_prompt(tree, "baseline_2")
+    bare = LocalHF(config).generate(prompt).text
+    result = run_inference([tree], ["baseline_2"], config,
+                           backend=LocalHF(config, malformed="```json\n" + bare + "\n```"))
+    summary = run_llm.execution_summary(
+        selected_backend="hf", trees=[tree], variants=["baseline_2"],
+        predictions=result.predictions, completions=result.completions, manifest=result.manifest,
+    )
+    assert summary["acceptance"]["status"] == "passed"
+    completions = copy.deepcopy(result.completions)
+    if tamper == "missing":
+        del completions[0]["response_normalization"]
+    else:
+        field = {"policy": "policy", "envelope": "envelope", "normalized_hash": "normalized_text_sha256"}[tamper]
+        completions[0]["response_normalization"][field] = "incorrect"
+    summary = run_llm.execution_summary(
+        selected_backend="hf", trees=[tree], variants=["baseline_2"],
+        predictions=result.predictions, completions=completions, manifest=result.manifest,
+    )
+    assert summary["execution"]["validated_requests"] == 0
+    assert summary["acceptance"]["status"] == "incomplete"
+
+
+def test_legacy_manifest_without_policy_keeps_strict_bare_json_acceptance():
+    tree = PairedBehaviorTree.model_validate_json((SAMPLE / "pair_000_bt.json").read_bytes())
+    config = LLMConfig()
+    result = run_inference([tree], ["baseline_2"], config, backend=LocalHF(config))
+    manifest, completions = copy.deepcopy(result.manifest), copy.deepcopy(result.completions)
+    manifest.pop("response_policy")
+    manifest.pop("response_processing")
+    manifest["config"].pop("response_policy")
+    completions[0].pop("response_normalization")
+    summary = run_llm.execution_summary(
+        selected_backend="hf", trees=[tree], variants=["baseline_2"],
+        predictions=result.predictions, completions=completions, manifest=manifest,
+    )
+    assert summary["acceptance"]["status"] == "passed"
 
 
 @pytest.mark.parametrize("tamper", [

@@ -21,7 +21,8 @@ from pydantic import ValidationError
 from scripts import run_llm
 from telemetry_reasoning.models import llm
 from telemetry_reasoning.models.llm import (
-    Generation, LLMConfig, StubBackend, load_llm_config, parse_response, run_inference,
+    Generation, LLMConfig, StubBackend, load_llm_config, parse_response,
+    response_normalization, run_inference,
 )
 from telemetry_reasoning.models.prompts import build_prompt
 from telemetry_reasoning.schemas import PairedBehaviorTree
@@ -129,6 +130,99 @@ def test_structured_response_is_grounded_and_gets_join_fields(tree):
     assert set(record) == RECORD_KEYS
     assert record == dict(response, pair_id="000", model_variant="baseline_2", backend="hf")
     assert tree.metadata.failure_mode.value not in record["explanation"]
+
+
+@pytest.mark.parametrize("variant", ["baseline_2", "baseline_3"])
+@pytest.mark.parametrize("newline,outer", [("\n", ""), ("\r\n", " \t\n")])
+def test_explicit_fence_policy_preserves_payload_and_validates_both_variants(tree, variant, newline, outer):
+    prompt = build_prompt(tree, variant)
+    payload = json.dumps(model_response(prompt), ensure_ascii=False)
+    raw = outer + "```json" + newline + payload + newline + "```" + outer
+    expected = parse_response(payload, prompt, "000", "hf")
+    with pytest.raises(json.JSONDecodeError):
+        parse_response(raw, prompt, "000", "hf")
+    assert parse_response(raw, prompt, "000", "hf", response_policy="json_or_fenced_v1") == expected
+    assert response_normalization(raw, "json_or_fenced_v1") == {
+        "policy": "json_or_fenced_v1", "envelope": "json_code_fence",
+        "normalized_text_sha256": hashlib.sha256(payload.encode()).hexdigest(),
+    }
+    assert response_normalization(payload, "json_or_fenced_v1")["envelope"] == "none"
+
+
+@pytest.mark.parametrize("wrap", [
+    lambda body: "Here is the result:\n```json\n" + body + "\n```",
+    lambda body: "```json\n" + body + "\n```\nExtra explanation.",
+    lambda body: "```json\n" + body + "\n```\n```json\n" + body + "\n```",
+    lambda body: "```json\n" + body,
+    lambda body: body + "\n```",
+    lambda body: "```\n" + body + "\n```",
+    lambda body: "```JSON\n" + body + "\n```",
+    lambda body: "```python\n" + body + "\n```",
+    lambda body: "```json " + body + "```",
+    lambda body: "~~~json\n" + body + "\n~~~",
+    lambda body: "\u00a0```json\n" + body + "\n```",
+])
+def test_fence_policy_does_not_extract_json_from_other_output(tree, wrap):
+    prompt = build_prompt(tree, "baseline_2")
+    with pytest.raises(ValueError):
+        parse_response(wrap(json.dumps(model_response(prompt))), prompt, "000", "hf",
+                       response_policy="json_or_fenced_v1")
+
+
+@pytest.mark.parametrize("defect", ["duplicate", "nonfinite", "extra_key", "unsupported_evidence", "malformed", "array"])
+def test_fence_policy_retains_strict_json_schema_and_evidence_checks(tree, defect):
+    prompt = build_prompt(tree, "baseline_2")
+    response = model_response(prompt)
+    if defect == "extra_key":
+        response["pair_id"] = "injected_identity"
+    if defect == "unsupported_evidence":
+        response["evidence"][0]["value"] += 100
+    payload = json.dumps(response)
+    if defect == "duplicate":
+        payload = payload[:-1] + ', "status": "ok"}'
+    elif defect == "nonfinite":
+        payload = payload.replace('"status": "ok"', '"status": NaN')
+    elif defect == "malformed":
+        payload = payload[:-1]
+    elif defect == "array":
+        payload = "[" + payload + "]"
+    with pytest.raises(ValueError):
+        parse_response("```json\n" + payload + "\n```", prompt, "000", "hf",
+                       response_policy="json_or_fenced_v1")
+
+
+def test_fence_handling_does_not_rewrite_explanation_or_non_ascii_content(tree):
+    prompt = build_prompt(tree, "baseline_2")
+    response = model_response(prompt)
+    response["explanation"] = "Recorded text, including ``` and café, stays unchanged—even if causally wrong."
+    raw = "```json\n" + json.dumps(response, ensure_ascii=False) + "\n```"
+    parsed = parse_response(raw, prompt, "000", "hf", response_policy="json_or_fenced_v1")
+    assert parsed["explanation"] == response["explanation"]
+
+
+def test_response_policy_is_versioned_and_unknown_values_are_rejected(tree):
+    assert LLMConfig().response_policy == "strict_json_v1"
+    with pytest.raises(ValueError):
+        LLMConfig(response_policy="auto_repair")
+    prompt = build_prompt(tree, "baseline_2")
+    with pytest.raises(ValueError, match="unsupported response policy"):
+        parse_response(json.dumps(model_response(prompt)), prompt, "000", "hf", response_policy="unknown")
+
+
+def test_inference_records_policy_and_raw_fenced_responses_without_content_repair(tree):
+    prompt = build_prompt(tree, "baseline_2")
+    raw = "```json\n" + json.dumps(model_response(prompt)) + "\n```"
+    config = LLMConfig(response_policy="json_or_fenced_v1")
+    result = run_inference([tree], ["baseline_2", "baseline_3"], config, backend=FakeBackend(text=raw))
+    assert result.manifest["response_policy"] == config.response_policy
+    assert result.manifest["response_processing"] == {
+        "policy": config.response_policy, "raw_text_preserved": True, "fenced_requests": 2,
+    }
+    assert all(record["status"] == "ok" for record in result.predictions)
+    for completion in result.completions:
+        assert completion["text"] == raw
+        assert completion["completion_sha256"] == hashlib.sha256(raw.encode()).hexdigest()
+        assert completion["response_normalization"] == response_normalization(raw, config.response_policy)
 
 
 def test_every_shared_failure_mode_is_supported_including_excessive_speed(tree):
