@@ -125,10 +125,16 @@ def main():
             problems['unbalanced_conditions']+=1
         if tr['summary']:
             if tr['summary'].get('accepted_pairs')!=len(pairs): problems['summary_metadata_disagreement']+=1
+    from telemetry_reasoning.sim.validate_dataset import validate_dataset
+    report['acceptance'] = validate_dataset(root)
     report['issues']=dict(problems); report['examples']=examples
     args.report.write_text(json.dumps(report,indent=2),encoding='utf-8')
     print('Report:',args.report.resolve())
     print('Issues:',dict(problems))
     for t,d in report['tasks'].items(): print(t, 'pairs:',d['metadata_rows'],'success files:',d['success_files'],'failure files:',d['failure_files'],'modes:',d['mode_counts'],'conditions:',len(d['condition_counts']))
+    acceptance = report['acceptance']
+    print('Parser-ready pairs:', acceptance['accepted_pairs'], 'quarantined:', acceptance['quarantined_pairs'])
+    if problems or acceptance['fatal_errors'] or acceptance['quarantined_pairs']:
+        raise SystemExit(1)
 
 if __name__=='__main__': main()
