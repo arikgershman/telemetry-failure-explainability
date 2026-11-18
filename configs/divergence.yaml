@@ -1,0 +1,16 @@
+# Initial, provisional thresholds for paired success-versus-failure divergence.
+# These are NOT compression thresholds and are not calibrated on real data.
+# Strictly greater than (>) triggers the first-divergence timestamp.
+divergence:
+  thresholds:
+    joint_positions: 0.10      # rad
+    joint_velocities: 0.50     # rad/s
+    joint_torques: 1.00        # N m
+    gripper_state: 0.50        # normalized closure
+    gripper_force: 2.00        # N
+    ee_pos: 0.03               # m, max component difference
+    ee_quat: 0.10              # sign-aligned dimensionless quaternion components
+    obj_pos: 0.03              # m, max component difference
+    obj_quat: 0.10             # sign-aligned dimensionless quaternion components
+    obj_vel: 0.15              # m/s, max component difference
+    contact_force: 2.00       # N
