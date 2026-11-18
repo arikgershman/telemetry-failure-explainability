@@ -92,6 +92,7 @@ def _run(task, seed, initial_condition_id, failure, output, spread):
         'task': task.value,
         'seed': seed,
         'initial_condition_id': initial_condition_id,
+        'telemetry_start_sim_s': log.origin,
         'initial_offset_xy': offset.tolist(),
         'controller_outcome': controller.stage,
         'controller_reason': controller.reason,
