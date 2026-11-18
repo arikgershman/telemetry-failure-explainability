@@ -33,6 +33,14 @@ $batch = 'outputs/dataset/batch_20261030_152125_e5ca72de'
 & $python -m telemetry_reasoning.sim.freeze_robot_dataset $batch --verify "$batch/manifest.json"
 ```
 
+For onset scoring, download `pickup_diagnostics.clock_aligned.jsonl` and
+`transport_diagnostics.clock_aligned.jsonl` from the
+[`dataset-v1` release](https://github.com/arikgershman/telemetry-failure-explainability/releases/tag/dataset-v1)
+into `runs/`. Add `--clock-sidecars runs/pickup_diagnostics.clock_aligned.jsonl runs/transport_diagnostics.clock_aligned.jsonl`
+to the manifest generation command. The importer joins records by task and
+pair ID, checks the recovered clock arithmetic against the archived activation
+times, and records the sidecar hashes in the batch manifest.
+
 The generator rechecks all 1,000 pairs before writing the inventory and task
 manifests. The inventory covers the files under the original task directories.
 The generated files live alongside those directories. The root-level
@@ -67,24 +75,54 @@ GitHub's MuJoCo Telemetry Dataset v1 release lists `dataset_v1.zip` and
 generation seed 723. The local `dataset-v1` tag resolves to
 `73eeb975c2593e7fe8ad7a8a31a6253693303784`. That commit pins MuJoCo Menagerie
 to `f3b6013629c7b94f8ee93fd977b161fa8350f9bc` and includes the generator and
-scene. The release information establishes a source reference. The exact
-working tree and calibration inputs used to generate the ZIP still need
-producer confirmation.
+scene. The Track 2 owner confirmed that the ZIP was generated from this
+commit with its pinned model and no local changes. The generator is
+`src/telemetry_reasoning/sim/dataset.py`. The producer supplied this command:
+
+```bash
+python -m telemetry_reasoning.sim.dataset --task all --pairs-per-task 500 --seed 723 --spread 0.015 --calibration outputs/calibration/batch_20261030_144101_38130aff/pick_up_object/recommended_configs.csv outputs/calibration/batch_20261030_144101_38130aff/transport_object/recommended_configs.csv
+```
+
+The command produced `outputs/dataset/batch_20261030_152125_e5ca72de/` with
+500 pairs per task. The command records both calibration paths. The input
+files are unavailable in the validation workspace, so their contents and
+checksums could not be verified here.
 
 All 1,000 pairs passed the acceptance gate and batch parser, with zero
 rejections. The checksum verification passed for 2,006 files. The tuner
 ran nine candidates on 50 dev pairs per task and recommended
 `k=5;threshold_scale=1` for both tasks. The archived
 activation timestamp is stored as `injection_timestamp_s`, with
-`injection_time_basis` set to `absolute_simulator_time`. The evaluator's
-`injection_timestamp` field requires a time relative to the failure trace, so
-these task manifests omit that field and leave onset scoring unavailable.
+`injection_time_basis` set to `absolute_simulator_time`. With the sidecars,
+the task manifests also contain the evaluator's `injection_timestamp`,
+copied from `injected.failure.first_activation_csv_s` on the failure CSV
+timeline. Track 1 recovered the origins from verified nominal replay and
+applied them to the paired failure runs. Track 2 compares the archived
+samples strictly before activation, with a 1 microsecond cutoff tolerance
+and an absolute numeric comparison tolerance of `1e-8`.
+All 91,976 comparable samples agreed across 777 pairs. The other 223
+pairs activated at CSV time zero and had no earlier samples to compare.
+The evaluator loaded all 500 onset timestamps from each task manifest.
 
-The archived batch still needs the producer's exact generator, model, and
-configuration revisions, per-run task time origins, and machine-readable
-terminal outcome measurements. Those are required for the full pre-injection
-trajectory and independent physical outcome checks and final release
-certification. The manifest fingerprints the archived bytes and records the
-validator's current provenance. Windows Application Control blocks the native
-MuJoCo import in the current environment. The runner hook contract remains
-an open interface decision with Track 1.
+The independent sampled-outcome audit found that all 1,000 nominal traces
+met their object goal at the last observation and all 1,000 injected traces
+missed it. Pickup uses object rise from the first sample. Transport uses
+the first sample's XY position plus the 0.15 m commanded displacement and
+the controller's target height. Run the audit from the repository root:
+
+```powershell
+New-Item -ItemType Directory -Path runs -Force | Out-Null
+& $python -m telemetry_reasoning.sim.audit_observed_outcomes $batch --output runs/track2-observed-outcomes.json
+```
+
+The report records the observed endpoint measurements per pair. The controller's
+terminal decision can occur between samples, and pickup also checks end-effector
+error.
+
+The sampled-outcome audit closes the v1 failure-outcome check. Exact
+termination-step verification is unavailable for v1.
+
+The manifest fingerprints the archived bytes and records the validator's
+provenance. Windows Application Control blocks the native
+MuJoCo import in the current environment. The agreed runner interface
+accepts an optional `FailureConfig` and returns `EpisodeResult`.

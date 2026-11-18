@@ -119,3 +119,20 @@ def test_task_manifests_load_in_tuner_and_evaluator(tmp_path):
         loaded = load_manifest(path)
         assert loaded.splits == {"000000": split}
         assert loaded.injection_times == {}
+
+    aligned = {
+        "clock_alignment": {
+            "pick_up_object": {"pairs": {"000000": {"injection_timestamp": 0.0}}},
+            "transport_object": {"pairs": {"000000": {"injection_timestamp": 1.25}}},
+        },
+        "validation": {"pairs": records},
+        "metadata_layout": {task: f"{task}/metadata.csv" for task in tasks},
+        "split_seed": 723,
+        "verification_scope": {},
+        "splits": {"splits": splits},
+    }
+    for task, manifest in task_manifests(aligned).items():
+        path = tmp_path / f"{task}.json"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        expected = aligned["clock_alignment"][task]["pairs"]["000000"]["injection_timestamp"]
+        assert load_manifest(path).injection_times == {"000000": expected}

@@ -37,7 +37,7 @@ def source_provenance() -> dict:
             'source_sha256': {p.relative_to(root).as_posix(): sha256_file(p) for p in paths}}
 
 
-def freeze_dataset(batch: Path, seed: int = 723) -> dict:
+def freeze_dataset(batch: Path, seed: int = 723, *, clock_sidecars=None) -> dict:
     """Create a manifest recording splits and file fingerprints."""
     batch = batch.resolve()
     from telemetry_reasoning.sim.validate_dataset import validate_dataset
@@ -62,7 +62,7 @@ def freeze_dataset(batch: Path, seed: int = 723) -> dict:
                     "size_bytes": path.stat().st_size,
                 }
 
-    return {
+    manifest = {
         "manifest_version": 1,
         "hash_algorithm": "sha256",
         "provenance": source_provenance(),
@@ -80,6 +80,22 @@ def freeze_dataset(batch: Path, seed: int = 723) -> dict:
         "splits": splits,
         "files": files,
     }
+    if clock_sidecars is not None:
+        from telemetry_reasoning.sim.clock_alignment import load_aligned_clocks
+
+        clocks = {}
+        for task, path in zip(TASKS, clock_sidecars, strict=True):
+            pairs = load_aligned_clocks(batch / task, path)
+            clocks[task] = {
+                "source": path.name,
+                "sha256": sha256_file(path),
+                "pairs": pairs,
+            }
+        manifest["clock_alignment"] = clocks
+        manifest["verification_scope"]["pre_injection_trajectory_agreement"] = (
+            "compared_archived_samples_before_csv_injection_timestamp"
+        )
+    return manifest
 
 
 def task_manifests(manifest: dict) -> dict[str, dict]:
@@ -97,6 +113,7 @@ def task_manifests(manifest: dict) -> dict[str, dict]:
         }
         for task in TASKS
     }
+    clocks = manifest.get("clock_alignment", {})
     for split, pairs in manifest["splits"]["splits"].items():
         for pair in pairs:
             task, pair_id = pair["task"], pair["pair_id"]
@@ -106,6 +123,7 @@ def task_manifests(manifest: dict) -> dict[str, dict]:
                 "split": split,
                 "injection_timestamp_s": record["injection_timestamp_s"],
                 "injection_time_basis": record["injection_time_basis"],
+                **clocks.get(task, {}).get("pairs", {}).get(pair_id, {}),
             }
     return result
 
@@ -159,6 +177,10 @@ def main():
     )
     parser.add_argument("--seed", type=int, default=723)
     parser.add_argument(
+        "--clock-sidecars", nargs=2, type=Path, metavar=("PICKUP", "TRANSPORT"),
+        help="Track 1's aligned pickup and transport diagnostics, in that order",
+    )
+    parser.add_argument(
         "--task-manifests-dir",
         type=Path,
         help="Write one parser/evaluator manifest per task, using original pair IDs",
@@ -171,8 +193,8 @@ def main():
     args = parser.parse_args()
 
     if args.verify:
-        if args.task_manifests_dir:
-            parser.error("--task-manifests-dir is only available when generating a manifest")
+        if args.task_manifests_dir or args.clock_sidecars:
+            parser.error("--task-manifests-dir and --clock-sidecars apply only when generating a manifest")
         manifest = json.loads(args.verify.read_text(encoding="utf-8"))
         errors = verify_dataset(args.batch, manifest)
 
@@ -185,7 +207,7 @@ def main():
         print("Dataset verification passed!")
         return
 
-    manifest = freeze_dataset(args.batch, seed=args.seed)
+    manifest = freeze_dataset(args.batch, seed=args.seed, clock_sidecars=args.clock_sidecars)
     args.output.write_text(
         json.dumps(manifest, indent=2) + "\n",
         encoding="utf-8",

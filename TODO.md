@@ -60,7 +60,7 @@ full_input = tree.to_full_paired()                    # Main; divergence still n
 
 These are planned interfaces agreed by this task breakdown; each owner implements its side using local fakes until the producer is merged.
 
-1. **Track 1 -> Track 2:** Track 1 provides the completed MuJoCo simulation, nominal controllers, failure injection engine, paired dataset generator, and generated telemetry dataset. `sim/runner.py` exposes `run_episode(*, task, seed, initial_condition_id, control_hook=None) -> (rows, task_succeeded, diagnostics)`. `rows` is `list[RawTelemetryRow]`; `task` is `Task`; `diagnostics` is a JSON-serializable dict with initial-state identity, outcome checks, and timing. The optional hook receives `(timestamp, subtask, nominal_command)` at each 500 Hz control step and returns a modified command. The command dict has `ee_pos` (m), `ee_quat` (w/x/y/z), `gripper_state` (desired closure in [0, 1]), `gripper_force` (N), and `speed_scale` (unitless). These are control targets; measured telemetry is logged separately. Track 2 verifies deterministic replay, identical paired initial states, pre-injection trajectory agreement, perturbation isolation, physical outcomes, and telemetry integrity. The generated dataset is stored under `outputs/dataset/batch_20261030_152125_e5ca72de/`, with separate `pick_up_object/` and `transport_object/` directories containing paired CSVs, `metadata.csv`, `diagnostics.jsonl`, and `summary.json`. The dataset contains 500 accepted pairs per task across 50 initial conditions, balanced across four calibrated failure modes. All five failure mechanisms are implemented, but `excessive_speed` is excluded from the accepted dataset due to insufficient failure reliability.
+1. **Track 1 -> Track 2:** Track 1 provides the completed MuJoCo simulation, nominal controllers, failure injection engine, paired dataset generator, and generated telemetry dataset. `sim/runner.py` exposes `run_episode(*, task, seed, initial_condition_id, failure=None, output=None, spread=0.015) -> EpisodeResult`. The result contains canonical telemetry rows, `task_succeeded`, and JSON-serializable diagnostics. Pass a `FailureConfig` for injected runs and omit it for nominal runs. Track 2 verifies deterministic replay, identical paired initial states, pre-injection trajectory agreement, perturbation isolation, physical outcomes, and telemetry integrity. The generated dataset is stored under `outputs/dataset/batch_20261030_152125_e5ca72de/`, with separate `pick_up_object/` and `transport_object/` directories containing paired CSVs, `metadata.csv`, `diagnostics.jsonl`, and `summary.json`. The dataset contains 500 accepted pairs per task across 50 initial conditions, balanced across four calibrated failure modes. All five failure mechanisms are implemented, but `excessive_speed` is excluded from the accepted dataset due to insufficient failure reliability.
 2. **Track 2 -> Tracks 3/4:** Track 2 provides a validated, parser-ready dataset by consolidating or indexing the existing task-specific `metadata.csv` files and their referenced success/failure telemetry CSVs, plus `manifest.json` for information absent from `MetadataRow`: initial-condition IDs, train/dev/test split assignments, model/config revisions, outcome checks, and injection timestamps. The final handoff must provide a documented dataset root and metadata layout compatible with the existing CSV I/O and parser interfaces, without modifying the shared schemas. Track 2 verifies unique pair IDs within each task, complete ordered success traces, ordered failure prefixes, deterministic replay, and split isolation before freezing the dataset. Keep sidecar fields out of the strict CSV schemas. Track 3 uses the validated CSVs for Behavior Tree construction; Track 4 uses the manifest for grouped evaluation splits and optional onset scoring. The dataset contains four calibrated failure modes, with 125 accepted pairs per mode per task; `excessive_speed` remains a valid `FailureMode` but has no accepted dataset examples.
 3. **Track 3 -> Tracks 4/5:** `pair_<pair_id>_bt.json` files validated as `PairedBehaviorTree`, using one canonical contract for complete and partial failure traces. After divergence runs, observed nodes have `divergence_status="computed"` with a `DeterministicDivergence`; unchanged comparisons have zero deltas and a null first-divergence timestamp. Unobserved nodes retain empty failure samples, `divergence_status="not_comparable"`, and a null object. Observed nodes with null objects remain explicitly uncomputed. Track 5 may populate a deep copy of the sample with hand-checked divergence values and matching statuses for tests while Track 3 works.
 4. **Tracks 4/5 -> evaluator:** one JSONL prediction per `(pair_id, model_variant)`, with fields `pair_id`, `model_variant` (`baseline_1`, `baseline_2`, `baseline_3`, `main`), `predicted_failure_mode` (`FailureMode` value or null), `predicted_subtask` (`Subtask` value or null), `explanation` (string), `evidence` (list of `{subtask, timestamp, feature, value}` records using `TelemetryFeature` values), `status` (`ok`, `abstain`, `error`), and `backend` (`rules`, `hf`, `stub`). Evidence refers to observed failure samples, with `value` a finite scalar or vector matching that feature's `RawTelemetryRow` shape; paired/divergence comparisons may also be described in the explanation. Track 4 implements validation in `eval/contracts.py`; Track 5 can emit this documented format before that module lands. Additional runtime/token/config provenance belongs in a sibling run-manifest JSON. Stub outputs are for plumbing tests and must never be reported as LLM results.
@@ -87,7 +87,7 @@ These are planned interfaces agreed by this task breakdown; each owner implement
 
 ### Input & output contracts
 
-- Input: `Task`, `TASK_SUBTASKS`, simulation seed, initial-condition ID, and optional failure injection configuration. The runner supports `run_episode(*, task, seed, initial_condition_id, control_hook=None)` for nominal and perturbed execution.
+- Input: `Task`, `TASK_SUBTASKS`, simulation seed, initial-condition ID, and optional failure injection configuration. The runner supports `run_episode(*, task, seed, initial_condition_id, failure=None)` for nominal and perturbed execution.
 - Output: `RawTelemetryRow` observations with timestamps, subtask labels, joint positions/velocities/torques, gripper state/force, end-effector pose, object pose/velocity, and contact force. Simulation steps at 500 Hz and telemetry is recorded at 50 Hz.
 - Dataset: task-specific `success/` and `failure/` directories containing paired telemetry CSVs, with `metadata.csv`, `diagnostics.jsonl`, and `summary.json` for each task.
 - Coverage: 50 initial conditions × 10 accepted pairs = 500 pairs per task; 1,000 pairs and 2,000 telemetry CSVs total. Four selected failure modes are balanced at 125 pairs per mode per task.
@@ -105,14 +105,10 @@ These are planned interfaces agreed by this task breakdown; each owner implement
 - [x] Balance the four selected failure modes at 125 accepted pairs per mode per task, producing **1,000 pairs and 2,000 telemetry CSVs**.
 - [x] Save telemetry, metadata, episode diagnostics, and generation summaries; complete an initial dataset audit confirming expected file counts, condition coverage, failure-mode balance, and zero reported issues.
 
-Implemented generation command (run from `src/`):
+Producer-confirmed generation command for `dataset_v1.zip`:
 
 ```bash
-python -m telemetry_reasoning.sim.dataset \
-  --task all \
-  --pairs-per-task 500 \
-  --seed 723 \
-  --calibration ../data/calibration/pickup_recommended.csv ../data/calibration/transport_recommended.csv
+python -m telemetry_reasoning.sim.dataset --task all --pairs-per-task 500 --seed 723 --spread 0.015 --calibration outputs/calibration/batch_20261030_144101_38130aff/pick_up_object/recommended_configs.csv outputs/calibration/batch_20261030_144101_38130aff/transport_object/recommended_configs.csv
 ```
 
 Generated dataset:
@@ -137,7 +133,7 @@ outputs/dataset/batch_20261030_152125_e5ca72de/
 
 **Owner / name:** Suhani Chaudhary
 
-**Status (Nov. 17):** all 1,000 archived pairs passed validation and batch parsing. The archived bytes have a verified checksum inventory, and task-specific grouped split manifests are ready for downstream use. See [the dataset handoff](docs/track2-dataset-handoff.md). Producer provenance, independent failure-outcome verification, and final release certification remain pending.
+**Status (Nov. 18) — Complete for v1.** No Track 2 handoff blockers remain. All 1,000 archived pairs passed validation and batch parsing. The archive checksum inventory is verified, and the task manifests include grouped splits and CSV-relative injection times. The v1 failure-outcome check covers the last recorded sample. The producer's generation command and calibration input paths are documented in [the dataset handoff](docs/track2-dataset-handoff.md).
 
 **Scope:** validate reproducibility, physical outcomes, telemetry integrity, and parser compatibility of the completed simulation dataset. Establish leakage-free dataset splits, automated checks, and a frozen dataset manifest for downstream Behavior Tree conversion and evaluation.
 
@@ -163,23 +159,25 @@ outputs/dataset/batch_20261030_152125_e5ca72de/
 
 - [x] Verify fresh nominal deterministic replay/reset for both tasks at seed 723, initial condition 0, and injected replay for one released configuration per calibrated failure mode per task, each repeated twice. Numeric telemetry agrees within absolute tolerance `1e-8`, with no relative tolerance. This is representative replay evidence, not replay certification of every stored CSV.
 - [x] Validate stored paired initial-state identities, metadata/diagnostic consistency, and activation diagnostics; test command isolation and activation boundaries for all five mechanisms, including `excessive_speed`.
-- [ ] Verify full pre-injection trajectory agreement once the producer records canonical task onset in absolute simulator time.
+- [x] Match and validate all 1,000 recovered timing records and verify pre-injection trajectory agreement across the archived samples. All 91,976 comparable samples agreed across 777 pairs. The remaining 223 pairs activated at CSV time zero and had no earlier samples. Track 4 can now load the CSV-relative activation times for all pairs.
 - [x] Verify real nominal success across all 50 initial conditions per task at seed 723. Independently check final pickup object rise exceeds 0.12 m and transport XY placement is within 0.04 m of the expected 0.15 m displacement.
+- [x] Independently audit the object goal at the last recorded 50 Hz sample for all 2,000 archived runs. All 1,000 nominal traces met the sampled goal, and all 1,000 injected traces missed it. Per-run measurements are in `runs/track2-observed-outcomes.json`.
 - [x] Check all released traces using canonical CSV validation, including logging cadence, schema, ordered stages, paired joint dimensions, quaternion normalization/sign continuity, and metadata file-reference reuse. Inspect units and measured force sources in the logger; this does not independently calibrate force accuracy.
-- [ ] Independently verify physical outcomes for all stored failure runs using machine-readable outcome measurements from the producer; controller outcome strings alone are insufficient.
+- [x] Close the v1 failure-outcome check using independent measurements at the last recorded sample. All 1,000 injected runs missed their object goal. Exact termination-step verification is unavailable for v1 and is outside the v1 handoff.
 - [x] Use `build_paired_bt()` as the acceptance gate for stage coverage. Test that ordered partial failures pass without changing source CSVs and that skipped stages and incomplete success traces are rejected.
 - [x] Pass full-release coverage and parser acceptance for all 1,000 pairs. Each task has 500 pairs across 50 initial conditions and 125 pairs per calibrated mode.
 - [x] Implement deterministic train/dev/test splits grouped by initial condition (35/5/10 per task and 700/100/200 total pairs), keeping paired and repeated executions together and checking task/failure-mode coverage, duplicate diagnostics, and split isolation.
 - [x] Add automated reset/replay, failure-injection boundary/isolation, dataset validation, split, and checksum tests. Record the exclusion of `excessive_speed` from the accepted dataset due to insufficient failure reliability.
 - [x] Add 12 CPU-only generator retry tests using fake episode results: inactive injection, injected success, and empty telemetry rejection; preserved condition/mode and paired inputs; accepted-only CSV/diagnostic output; attempt exhaustion and partial-run reporting; and immediate abort for failed/incomplete nominal episodes. These exercise the real generator and CSV I/O without MuJoCo or model assets.
-- [ ] Coordinate the runner's missing `control_hook` interface and add hook acceptance tests.
+- [x] Confirm the runner contract uses `FailureConfig` and returns `EpisodeResult`. Existing injected replay and boundary/isolation checks cover this path.
 - [x] Implement manifest/checksum generation and verification, including changed/missing/unexpected files, same-size corruption, unsafe inventory paths, source fingerprints, split indices, validation records, and explicit verification limitations. Refuse to freeze an incompatible release.
 - [x] Regenerate the release splits at seed 723, publish task-specific manifest files locally, and verify their layout against the Track 3 tuner and Track 4 evaluator.
 - [x] Generate the archived dataset manifest and verify all 2,006 inventoried files against their SHA-256 checksums.
 - [x] Verify that the `dataset-v1` release tag points to `73eeb975c2593e7fe8ad7a8a31a6253693303784` and pins MuJoCo Menagerie to `f3b6013629c7b94f8ee93fd977b161fa8350f9bc`.
-- [ ] Confirm the exact generator working tree, model and calibration inputs used for the ZIP, and obtain per-run task time origins before final certification.
+- [x] Confirm that `dataset_v1.zip` was generated from `73eeb97` with its pinned MuJoCo model and no local changes.
+- [x] Record the producer-confirmed generation command and both calibration input paths for v1.
 
-### Validation results and current blockers
+### Validation results and verification limits
 
 The release audit exited **0**. The detailed report is in `runs/track2-partial-audit.json`.
 
@@ -193,20 +191,20 @@ The release audit exited **0**. The detailed report is in `runs/track2-partial-a
 - The batch parser wrote 1,000 BTs and rejected zero pairs. Both task-specific compression tuning runs evaluated nine candidates on 50 dev pairs and recommended `k=5;threshold_scale=1`.
 - The default full suite reported 718 passed, 23 failed, and 6 skipped. Failures were in Track 3 (one parser output hash), Track 4 (one failure-mode vocabulary mismatch), and Track 5 (21 LLM, CLI, replay, and prompt cases). The six opt-in Track 2 MuJoCo cases were skipped.
 - Earlier real MuJoCo runs passed nominal replay/reset for both tasks, nominal success and object-motion checks across all 100 task/condition combinations, and injected replay/failure/activation for four representative modes per task. Menagerie was pinned to `f3b6013629c7b94f8ee93fd977b161fa8350f9bc`. On the latest opt-in rerun, Windows Application Control blocked a native MuJoCo module during import, so all six cases stopped before reaching simulation assertions.
-- **Producer provenance/time follow-up:** record task onset in simulator seconds, exact generator/model/config revisions, and machine-readable physical outcome measurements. Current source hashes cannot establish the revision that generated old CSVs.
-- **Runner interface follow-up:** current `run_episode()` accepts `FailureConfig` and returns `EpisodeResult`; the planned `control_hook` and tuple return contract has not been implemented. Coordinate the API before writing hook acceptance tests.
+- **Producer provenance:** the generation command identifies both calibration inputs. Those files were unavailable in the validation workspace, so their contents and checksums could not be verified here.
+- **Terminal diagnostics audit:** rounded controller measurements support 384 pickup failures by insufficient rise and 125 transport failures by placement error. The other 491 injected runs record only timeout (118) or lost grasp (373). The v1 outcome check uses the last CSV sample for all 1,000 failures.
 
 ### Downstream handoff details
 
 Use `<batch>/<task>/metadata.csv` with `<batch>/<task>` as the parser's `--data-dir`, and separate BT output directories per task. Pair IDs overlap across tasks: use `(task, pair_id)` for joins, and coordinate globally unique IDs before combining tasks in one evaluation run. Do not silently merge metadata or globally glob those BT directories.
 
-Split entries record task, pair ID, initial condition, failure mode, and batch-relative POSIX file paths. Manifest injection timestamps are explicitly labeled **absolute simulator time**; CSV timestamps are relative to canonical task onset. Do not use them directly for onset scoring without the producer's task time origin.
+Split entries record task, pair ID, initial condition, failure mode, and batch-relative POSIX file paths. In the aligned task manifests, `injection_timestamp` is on the failure CSV timeline and is the field Track 4 uses for onset scoring. `injection_timestamp_s` preserves the archived absolute simulator time.
 
 The logger uses generalized actuator forces for joint torques/finger force, measured finger closure for gripper state, and MuJoCo contact normal forces involving the cube for `contact_force`. Units follow the shared SI schema, with w/x/y/z quaternions; quaternion norm checks use absolute tolerance `1e-6`.
 
-The current batch-level checksum inventory is at `<batch>/manifest.json`. Tracks 3 and 4 can consume `<batch>/handoff/<task>.json` now. The root-level `dataset_manifest.json`, `dataset_splits.json`, and `dataset_audit_report.json` predate this handoff. Final release certification still requires the producer checks above.
+The current batch-level checksum inventory is at `<batch>/manifest.json`. Tracks 3 and 4 can consume `<batch>/handoff/<task>.json` now. The root-level `dataset_manifest.json`, `dataset_splits.json`, and `dataset_audit_report.json` predate this handoff.
 
-The handoff supports Track 3 compression and divergence work and Track 4 split-based evaluation. Track 5 can use the grouped splits and gets computed divergence from Track 3. Optional onset scoring requires the simulator time corresponding to the start of each failure trace.
+The handoff supports Track 3 compression and divergence work and Track 4 split-based evaluation and onset scoring. Track 5 can use the grouped splits and gets computed divergence from Track 3.
 
 ### Verification commands (PowerShell, repository root)
 
@@ -215,6 +213,7 @@ $python = '.\.venv\Scripts\python.exe'
 New-Item -ItemType Directory -Path runs -Force | Out-Null
 & $python -m pytest tests/test_dataset_acceptance.py tests/test_dataset_validation.py tests/test_dataset_retries.py tests/test_failure_validation.py tests/test_dataset_manifest.py tests/test_dataset_splits.py tests/test_parser.py tests/test_partial_traces.py -q -p no:cacheprovider --basetemp runs/track2-partial-test-temp
 & $python -m telemetry_reasoning.sim.audit_robot_dataset outputs/dataset/batch_20261030_152125_e5ca72de --report runs/track2-partial-audit.json
+& $python -m telemetry_reasoning.sim.audit_observed_outcomes outputs/dataset/batch_20261030_152125_e5ca72de --output runs/track2-observed-outcomes.json
 git submodule update --init --depth 1 assets/mujoco_menagerie
 $env:TRACK2_REAL_SIM = '1'
 & $python -m pytest tests/test_sim_reproducibility.py -q -p no:cacheprovider --basetemp runs/track2-real-temp
@@ -228,7 +227,7 @@ To regenerate the archived dataset inventory and the downstream task manifests, 
 
 ```powershell
 $batch = 'outputs/dataset/batch_20261030_152125_e5ca72de'
-& $python -m telemetry_reasoning.sim.freeze_robot_dataset $batch --output "$batch/manifest.json" --task-manifests-dir "$batch/handoff"
+& $python -m telemetry_reasoning.sim.freeze_robot_dataset $batch --output "$batch/manifest.json" --task-manifests-dir "$batch/handoff" --clock-sidecars runs/pickup_diagnostics.clock_aligned.jsonl runs/transport_diagnostics.clock_aligned.jsonl
 & $python -m telemetry_reasoning.sim.freeze_robot_dataset $batch --verify "$batch/manifest.json"
 ```
 
