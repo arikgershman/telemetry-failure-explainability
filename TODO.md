@@ -236,7 +236,7 @@ After the remaining release checks are complete, generate and verify the manifes
 
 ## Track 3: Behavior Tree Builder & Deterministic Divergence Function
 
-**Owner / name:** Arik Gershman
+**Owner / name:** Arik Gershman & Gili Gordiyenko
 
 **Scope:** extend the existing parser into a batch BT pipeline, tune compression, and calculate reproducible numerical divergence. The proposal does not prescribe a formula; the alignment and metric definitions below are explicit implementation decisions to document and test.
 
