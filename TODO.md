@@ -137,7 +137,7 @@ outputs/dataset/batch_20261030_152125_e5ca72de/
 
 **Owner / name:** Suhani Chaudhary
 
-**Status (Nov. 17):** all 1,000 released pairs pass parser acceptance with ordered partial failure traces supported. Validation, grouped splitting, and checksum tooling are implemented. Producer provenance, independent failure-outcome verification, and the final dataset freeze remain pending.
+**Status (Nov. 17):** all 1,000 archived pairs passed validation and batch parsing. The archived bytes have a verified checksum inventory, and task-specific grouped split manifests are ready for downstream use. See [the dataset handoff](docs/track2-dataset-handoff.md). Producer provenance, independent failure-outcome verification, and final release certification remain pending.
 
 **Scope:** validate reproducibility, physical outcomes, telemetry integrity, and parser compatibility of the completed simulation dataset. Establish leakage-free dataset splits, automated checks, and a frozen dataset manifest for downstream Behavior Tree conversion and evaluation.
 
@@ -150,7 +150,7 @@ outputs/dataset/batch_20261030_152125_e5ca72de/
 
 - **Implemented:** `src/telemetry_reasoning/sim/audit_robot_dataset.py`, `validate_dataset.py`, `split_robot_dataset.py`, and `freeze_robot_dataset.py` for strict validation, grouped splitting, and checksum generation/verification.
 - **Implemented tests:** `tests/test_dataset_validation.py`, `test_dataset_acceptance.py`, `test_dataset_splits.py`, `test_dataset_manifest.py`, `test_dataset_retries.py`, `test_failure_validation.py`, and opt-in `test_sim_reproducibility.py`.
-- **Pending release artifact:** final dataset `manifest.json` and checksum inventory.
+- **Generated:** `<batch>/manifest.json` with validation results and a SHA-256 inventory, plus `<batch>/handoff/<task>.json` for parser tuning and split-based evaluation.
 - **Read/reuse:** `src/telemetry_reasoning/sim/runner.py`, `src/telemetry_reasoning/sim/failures.py`, `src/telemetry_reasoning/sim/dataset.py`, `src/telemetry_reasoning/parser/compressor.py`, and shared schemas/I/O.
 
 ### Input & output contracts
@@ -174,7 +174,10 @@ outputs/dataset/batch_20261030_152125_e5ca72de/
 - [x] Add 12 CPU-only generator retry tests using fake episode results: inactive injection, injected success, and empty telemetry rejection; preserved condition/mode and paired inputs; accepted-only CSV/diagnostic output; attempt exhaustion and partial-run reporting; and immediate abort for failed/incomplete nominal episodes. These exercise the real generator and CSV I/O without MuJoCo or model assets.
 - [ ] Coordinate the runner's missing `control_hook` interface and add hook acceptance tests.
 - [x] Implement manifest/checksum generation and verification, including changed/missing/unexpected files, same-size corruption, unsafe inventory paths, source fingerprints, split indices, validation records, and explicit verification limitations. Refuse to freeze an incompatible release.
-- [ ] Obtain exact producer/model/config revisions and task time origins, regenerate the release splits, then generate and verify the final manifest/checksum inventory and freeze the validated dataset.
+- [x] Regenerate the release splits at seed 723, publish task-specific manifest files locally, and verify their layout against the Track 3 tuner and Track 4 evaluator.
+- [x] Generate the archived dataset manifest and verify all 2,006 inventoried files against their SHA-256 checksums.
+- [x] Verify that the `dataset-v1` release tag points to `73eeb975c2593e7fe8ad7a8a31a6253693303784` and pins MuJoCo Menagerie to `f3b6013629c7b94f8ee93fd977b161fa8350f9bc`.
+- [ ] Confirm the exact generator working tree, model and calibration inputs used for the ZIP, and obtain per-run task time origins before final certification.
 
 ### Validation results and current blockers
 
@@ -186,7 +189,8 @@ The release audit exited **0**. The detailed report is in `runs/track2-partial-a
 | `transport_object` | 500 | 500 | 0 |
 | **Total** | **1,000** | **1,000** | **0** |
 
-- All 130 selected Track 2 and parser tests passed.
+- All 131 selected Track 2 and parser tests passed, including a regression test for the task-specific manifest layout.
+- The batch parser wrote 1,000 BTs and rejected zero pairs. Both task-specific compression tuning runs evaluated nine candidates on 50 dev pairs and recommended `k=5;threshold_scale=1`.
 - The default full suite reported 718 passed, 23 failed, and 6 skipped. Failures were in Track 3 (one parser output hash), Track 4 (one failure-mode vocabulary mismatch), and Track 5 (21 LLM, CLI, replay, and prompt cases). The six opt-in Track 2 MuJoCo cases were skipped.
 - Earlier real MuJoCo runs passed nominal replay/reset for both tasks, nominal success and object-motion checks across all 100 task/condition combinations, and injected replay/failure/activation for four representative modes per task. Menagerie was pinned to `f3b6013629c7b94f8ee93fd977b161fa8350f9bc`. On the latest opt-in rerun, Windows Application Control blocked a native MuJoCo module during import, so all six cases stopped before reaching simulation assertions.
 - **Producer provenance/time follow-up:** record task onset in simulator seconds, exact generator/model/config revisions, and machine-readable physical outcome measurements. Current source hashes cannot establish the revision that generated old CSVs.
@@ -200,7 +204,9 @@ Split entries record task, pair ID, initial condition, failure mode, and batch-r
 
 The logger uses generalized actuator forces for joint torques/finger force, measured finger closure for gripper state, and MuJoCo contact normal forces involving the cube for `contact_force`. Units follow the shared SI schema, with w/x/y/z quaternions; quaternion norm checks use absolute tolerance `1e-6`.
 
-The current parser-readiness evidence is in `runs/track2-partial-audit.json`. The root-level `dataset_manifest.json`, `dataset_splits.json`, and `dataset_audit_report.json` predate this audit. Final handoff requires the remaining checks and a verified release manifest.
+The current batch-level checksum inventory is at `<batch>/manifest.json`. Tracks 3 and 4 can consume `<batch>/handoff/<task>.json` now. The root-level `dataset_manifest.json`, `dataset_splits.json`, and `dataset_audit_report.json` predate this handoff. Final release certification still requires the producer checks above.
+
+The handoff supports Track 3 compression and divergence work and Track 4 split-based evaluation. Track 5 can use the grouped splits and gets computed divergence from Track 3. Optional onset scoring requires the simulator time corresponding to the start of each failure trace.
 
 ### Verification commands (PowerShell, repository root)
 
@@ -218,11 +224,12 @@ Remove-Item Env:TRACK2_REAL_SIM
 
 Default tests skip real physics unless explicitly enabled; dataset-dependent tests skip if the release is absent. Use a fresh temporary output path when needed. A generated split file alone does not establish dataset acceptance.
 
-After the remaining release checks are complete, generate and verify the manifest.
+To regenerate the archived dataset inventory and the downstream task manifests, then verify the inventory:
 
 ```powershell
-& $python -m telemetry_reasoning.sim.freeze_robot_dataset outputs/dataset/batch_20261030_152125_e5ca72de --output outputs/dataset/batch_20261030_152125_e5ca72de/manifest.json
-& $python -m telemetry_reasoning.sim.freeze_robot_dataset outputs/dataset/batch_20261030_152125_e5ca72de --verify outputs/dataset/batch_20261030_152125_e5ca72de/manifest.json
+$batch = 'outputs/dataset/batch_20261030_152125_e5ca72de'
+& $python -m telemetry_reasoning.sim.freeze_robot_dataset $batch --output "$batch/manifest.json" --task-manifests-dir "$batch/handoff"
+& $python -m telemetry_reasoning.sim.freeze_robot_dataset $batch --verify "$batch/manifest.json"
 ```
 
 ### Final deliverables

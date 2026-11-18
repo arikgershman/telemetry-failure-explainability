@@ -8,7 +8,7 @@ from pathlib import Path
 import platform
 import subprocess
 
-from telemetry_reasoning.sim.split_robot_dataset import create_splits
+from telemetry_reasoning.sim.split_robot_dataset import TASKS, create_splits
 
 
 def sha256_file(path: Path) -> str:
@@ -51,7 +51,7 @@ def freeze_dataset(batch: Path, seed: int = 723) -> dict:
 
     files = {}
 
-    for task in ("pick_up_object", "transport_object"):
+    for task in TASKS:
         task_dir = batch / task
 
         for path in sorted(task_dir.rglob("*")):
@@ -80,6 +80,34 @@ def freeze_dataset(batch: Path, seed: int = 723) -> dict:
         "splits": splits,
         "files": files,
     }
+
+
+def task_manifests(manifest: dict) -> dict[str, dict]:
+    """Project a release manifest into the pair-ID layout used downstream."""
+    validation = manifest["validation"]
+    records = {(record["task"], record["pair_id"]): record for record in validation["pairs"]}
+    result = {
+        task: {
+            "dataset_kind": "mujoco",
+            "task": task,
+            "metadata": manifest["metadata_layout"][task],
+            "split_seed": manifest["split_seed"],
+            "verification_scope": manifest["verification_scope"],
+            "pairs": {},
+        }
+        for task in TASKS
+    }
+    for split, pairs in manifest["splits"]["splits"].items():
+        for pair in pairs:
+            task, pair_id = pair["task"], pair["pair_id"]
+            record = records[task, pair_id]
+            result[task]["pairs"][pair_id] = {
+                **pair,
+                "split": split,
+                "injection_timestamp_s": record["injection_timestamp_s"],
+                "injection_time_basis": record["injection_time_basis"],
+            }
+    return result
 
 
 def verify_dataset(batch: Path, manifest: dict) -> list[str]:
@@ -131,6 +159,11 @@ def main():
     )
     parser.add_argument("--seed", type=int, default=723)
     parser.add_argument(
+        "--task-manifests-dir",
+        type=Path,
+        help="Write one parser/evaluator manifest per task, using original pair IDs",
+    )
+    parser.add_argument(
         "--verify",
         type=Path,
         help="Verify the dataset against an existing manifest",
@@ -138,6 +171,8 @@ def main():
     args = parser.parse_args()
 
     if args.verify:
+        if args.task_manifests_dir:
+            parser.error("--task-manifests-dir is only available when generating a manifest")
         manifest = json.loads(args.verify.read_text(encoding="utf-8"))
         errors = verify_dataset(args.batch, manifest)
 
@@ -158,6 +193,12 @@ def main():
 
     print(f"Recorded {len(manifest['files'])} files")
     print(f"Saved manifest: {args.output.resolve()}")
+    if args.task_manifests_dir:
+        args.task_manifests_dir.mkdir(parents=True, exist_ok=True)
+        for task, task_manifest in task_manifests(manifest).items():
+            path = args.task_manifests_dir / f"{task}.json"
+            path.write_text(json.dumps(task_manifest, indent=2) + "\n", encoding="utf-8")
+            print(f"Saved task manifest: {path.resolve()}")
 
 
 if __name__ == "__main__":
