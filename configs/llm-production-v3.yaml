@@ -1,0 +1,19 @@
+# Versioned acceptance protocol: native bounded prefill and model-selected observed JSON.
+# Compare all three prompted variants under this same profile; do not combine with v1/v2 scores.
+llm:
+  model_id: meta-llama/Llama-3.1-8B-Instruct
+  revision: 0e9e39f249a16976918f6564b8830bc894c89659
+  device: cuda
+  dtype: bfloat16
+  context_window_tokens: 65536
+  max_new_tokens: 512
+  batch_size: 1
+  seed: 723
+  response_policy: strict_json_v1
+  decoding_constraint: observed_json_v1
+  prefill_chunk_size: 2048
+  attention_implementation: sdpa
+  fused_attention_only: true
+  local_files_only: true
+  quantization: none
+  quantization_group_size: 64

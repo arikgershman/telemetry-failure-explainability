@@ -1,0 +1,14 @@
+# Production v2: accept a whole-response JSON fence; retain strict schema/evidence validation.
+llm:
+  model_id: meta-llama/Llama-3.1-8B-Instruct
+  revision: 0e9e39f249a16976918f6564b8830bc894c89659
+  device: cuda
+  dtype: bfloat16
+  context_window_tokens: 65536
+  max_new_tokens: 512
+  batch_size: 1
+  seed: 723
+  response_policy: json_or_fenced_v1
+  local_files_only: true
+  quantization: none
+  quantization_group_size: 64

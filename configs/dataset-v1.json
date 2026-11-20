@@ -1,0 +1,57 @@
+{
+  "lock_version": 1,
+  "release": {
+    "repository": "arikgershman/telemetry-failure-explainability",
+    "id": 430808764,
+    "tag": "dataset-v1",
+    "url": "https://github.com/arikgershman/telemetry-failure-explainability/releases/tag/dataset-v1",
+    "published_at": "2026-11-01T19:39:55Z"
+  },
+  "source_reference": {
+    "revision": "73eeb975c2593e7fe8ad7a8a31a6253693303784",
+    "menagerie_revision": "f3b6013629c7b94f8ee93fd977b161fa8350f9bc",
+    "status": "release_tag_reference_only",
+    "limitation": "The release tag does not establish the exact generator working tree, runtime, model bytes, or calibration inputs used to produce the archive."
+  },
+  "batch_name": "batch_20261030_152125_e5ca72de",
+  "archive_asset": "dataset_v1.zip",
+  "expected_task_files": 2006,
+  "assets": [
+    {
+      "id": 699312762,
+      "name": "dataset_v1.zip",
+      "size_bytes": 254332475,
+      "sha256": "657560c5a42c21bc2770525cb0d7ad0c219f226dd669a119c13d63e6dc157ce4",
+      "url": "https://github.com/arikgershman/telemetry-failure-explainability/releases/download/dataset-v1/dataset_v1.zip",
+      "api_url": "https://api.github.com/repos/arikgershman/telemetry-failure-explainability/releases/assets/699312762",
+      "role": "archive",
+      "task": null
+    },
+    {
+      "id": 761413047,
+      "name": "pickup_diagnostics.clock_aligned.jsonl",
+      "size_bytes": 591587,
+      "sha256": "c1436b72760f083e5a486cf6ad948072b5ceb7184dca49500c12e0697570bcd2",
+      "url": "https://github.com/arikgershman/telemetry-failure-explainability/releases/download/dataset-v1/pickup_diagnostics.clock_aligned.jsonl",
+      "api_url": "https://api.github.com/repos/arikgershman/telemetry-failure-explainability/releases/assets/761413047",
+      "role": "published_clock_sidecar",
+      "task": "pick_up_object"
+    },
+    {
+      "id": 761414369,
+      "name": "transport_diagnostics.clock_aligned.jsonl",
+      "size_bytes": 612836,
+      "sha256": "2b1d725497315b1e22aa39ee37759d35ae67ced3a1c46497a809a6e85238d430",
+      "url": "https://github.com/arikgershman/telemetry-failure-explainability/releases/download/dataset-v1/transport_diagnostics.clock_aligned.jsonl",
+      "api_url": "https://api.github.com/repos/arikgershman/telemetry-failure-explainability/releases/assets/761414369",
+      "role": "published_clock_sidecar",
+      "task": "transport_object"
+    }
+  ],
+  "extraction_limits": {
+    "max_members": 3000,
+    "max_total_bytes": 1000000000,
+    "max_member_bytes": 10000000,
+    "max_expansion_ratio": 1000
+  }
+}

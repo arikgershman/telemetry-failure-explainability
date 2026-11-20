@@ -2,6 +2,10 @@
 #
 # These are proposed operational choices, not values fixed by the proposal.
 # One mock pair only exercises the plumbing; it is not an accuracy estimate.
+# The prediction contract accepts all five canonical failure modes. Reports
+# retain every class, including excessive_speed when it has zero support in
+# the released four-class dataset. macro_f1 averages only classes with truth
+# support in the slice; macro_f1_fixed_labels averages all five schema labels.
 eval:
   # Variants that must be scored even if they have no predictions at all (each
   # pair then counts as "missing"). Leave empty for smoke runs; use all four

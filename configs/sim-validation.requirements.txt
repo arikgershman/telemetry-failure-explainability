@@ -1,0 +1,5 @@
+# Current validation runtime, exercised on macOS arm64 / Python 3.13.3.
+# This is NOT a claim about the unknown environment that generated dataset v1.
+# Install the project with its sim extra, then apply this optional replay profile.
+mujoco==3.3.7
+numpy==2.5.4

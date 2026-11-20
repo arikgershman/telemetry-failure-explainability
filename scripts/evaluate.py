@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 from telemetry_reasoning.eval.contracts import (
+    MODEL_VARIANTS,
     ContractError,
     index_predictions,
     read_predictions,
@@ -61,16 +62,26 @@ def _read_metadata(path: Path) -> Any:
 def _load_failure_view(path: Path) -> dict[str, Any]:
     from telemetry_reasoning.schemas import PairedBehaviorTree
 
-    return PairedBehaviorTree.model_validate_json(path.read_text()).to_failure_only().model_dump(mode="json")
+    # Consumer views are already JSON-compatible dictionaries. Validating the
+    # storage schema first keeps labels/success traces out of evidence lookup.
+    return PairedBehaviorTree.model_validate_json(path.read_text()).to_failure_only()
 
 
 def load_views(bt_dir: Path, truth: Sequence[TruthRecord]) -> dict[str, dict[str, Any]]:
     """Failure-only views for pairs that have a BT file; the rest stay unverifiable."""
+    if not bt_dir.is_dir():
+        raise ContractError(f"BT directory does not exist or is not a directory: {bt_dir}")
     views: dict[str, dict[str, Any]] = {}
     for t in truth:
         path = bt_dir / f"pair_{t.pair_id}_bt.json"
         if path.is_file():
-            views[t.pair_id] = _load_failure_view(path)
+            try:
+                view = _load_failure_view(path)
+            except ValueError as exc:
+                raise ContractError(f"{path}: invalid paired behavior tree: {exc}") from exc
+            if view.get("pair_id") != t.pair_id or view.get("task") != t.task:
+                raise ContractError(f"{path}: BT pair_id/task does not match metadata for pair {t.pair_id}")
+            views[t.pair_id] = view
     return views
 
 
@@ -83,10 +94,34 @@ def _write_csv(path: Path, rows: Sequence[dict[str, Any]], columns: Optional[Seq
 
 
 def _load_run_manifests(paths: Sequence[Path]) -> dict[str, Any]:
+    """Attach both rules' single-variant and inference's multi-variant receipts.
+
+    A multi-variant receipt is retained intact under each declared variant, so
+    downstream consumers can always find that variant's complete provenance.
+    Overlapping receipts are ambiguous and must never silently overwrite one
+    another.
+    """
     out: dict[str, Any] = {}
     for p in paths:
         data = json.loads(p.read_text())
-        out[str(data.get("model_variant", p.stem))] = data
+        if not isinstance(data, dict):
+            raise ContractError(f"{p}: run manifest must be a JSON object")
+        if "variants" in data:
+            variants = data["variants"]
+            if not isinstance(variants, list) or not variants or not all(isinstance(v, str) for v in variants):
+                raise ContractError(f"{p}: run-manifest variants must be a nonempty list of strings")
+            if "model_variant" in data and variants != [data["model_variant"]]:
+                raise ContractError(f"{p}: conflicting model_variant and variants declarations")
+        else:
+            variants = [data.get("model_variant", p.stem)]
+        if any(not isinstance(v, str) or v not in MODEL_VARIANTS for v in variants):
+            raise ContractError(f"{p}: unknown run-manifest model variant(s): {variants!r}")
+        if len(set(variants)) != len(variants):
+            raise ContractError(f"{p}: duplicate run-manifest variants")
+        for variant in variants:
+            if variant in out:
+                raise ContractError(f"duplicate run manifest for {variant}")
+            out[variant] = data
     return out
 
 
@@ -103,8 +138,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--run-manifest", type=Path, nargs="*", default=[])
     args = parser.parse_args(argv)
 
-    cfg = load_eval_config(args.config)
     try:
+        cfg = load_eval_config(args.config)
         truth_all = truth_from_rows(_read_metadata(args.metadata))
         manifest = load_manifest(args.manifest) if args.manifest else None
 
@@ -118,19 +153,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             truth = [t for t in truth_all if manifest.splits[t.pair_id] == args.split]
 
         indexed = index_predictions(read_predictions(*args.predictions), {t.pair_id for t in truth_all})
-    except (ContractError, ValueError, FileNotFoundError) as exc:
+
+        views = load_views(args.bt_dir, truth) if args.bt_dir else None
+        result = evaluate(
+            truth, indexed, cfg,
+            variants=args.variants,
+            views=views,
+            injection_times=manifest.injection_times if manifest else None,
+        )
+        result["split"] = args.split
+        result["run_manifests"] = _load_run_manifests(args.run_manifest)
+    except (ContractError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-
-    views = load_views(args.bt_dir, truth) if args.bt_dir else None
-    result = evaluate(
-        truth, indexed, cfg,
-        variants=args.variants,
-        views=views,
-        injection_times=manifest.injection_times if manifest else None,
-    )
-    result["split"] = args.split
-    result["run_manifests"] = _load_run_manifests(args.run_manifest)
 
     out = args.output_dir
     out.mkdir(parents=True, exist_ok=True)

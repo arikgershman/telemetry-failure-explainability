@@ -20,6 +20,11 @@ def test_reset_and_nominal_replay(task):
     first = run_episode(task=task, seed=723, initial_condition_id=0)
     second = run_episode(task=task, seed=723, initial_condition_id=0)
     assert first.task_succeeded and second.task_succeeded
+    assert first.diagnostics['physical_outcome']['status'] == 'succeeded'
+    assert first.diagnostics['terminal_state']['terminal_observed'] is True
+    assert first.diagnostics['producer']['recorded_at_generation'] is True
+    assert first.diagnostics['producer']['model_sha256']
+    assert first.diagnostics['producer']['source_files']
     assert first.diagnostics == second.diagnostics
     assert len(first.rows) == len(second.rows)
     for a, b in zip(first.rows, second.rows):
@@ -36,6 +41,7 @@ def test_nominal_success_all_initial_conditions(task):
     for condition in range(50):
         result = run_episode(task=task, seed=723, initial_condition_id=condition)
         assert result.task_succeeded, (task, condition, result.diagnostics)
+        assert result.diagnostics['physical_outcome']['status'] == 'succeeded'
         assert result.diagnostics['complete_subtasks']
         start, end = result.rows[0], result.rows[-1]
         if task == 'pick_up_object':

@@ -1,0 +1,10 @@
+# Separate Python 3.11 CUDA training environment. No weights are installed here.
+# Install the appropriate CUDA build of this exact torch release first.
+# Versioned TRL/PEFT APIs are linked in docs/gpu-training.md.
+torch==2.6.0
+transformers==4.49.0
+trl==0.15.2
+peft==0.14.0
+datasets==3.3.2
+accelerate==1.4.0
+psutil==7.0.0

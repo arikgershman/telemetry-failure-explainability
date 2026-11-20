@@ -37,6 +37,7 @@ SOURCE_PATHS = (
     "src/telemetry_reasoning/schemas.py",
     "src/telemetry_reasoning/eval/contracts.py",
 )
+CONSTRAINT_SOURCE = "src/telemetry_reasoning/models/constrained.py"
 VALIDATOR_UPGRADES = set(SOURCE_PATHS[:2])
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -227,14 +228,15 @@ def _sources(bundle: Path, manifest: dict[str, Any], prompt_dir: Path | None) ->
         if not re.fullmatch(r"[0-9a-f]{40}", revision):
             raise ValueError("invalid recorded generation Git revision")
     records = manifest.get("source_files")
-    if not isinstance(records, list) or len(records) != len(SOURCE_PATHS):
+    if not isinstance(records, list) or len(records) not in (len(SOURCE_PATHS), len(SOURCE_PATHS) + 1):
         raise ValueError("invalid generation source inventory")
+    source_paths = SOURCE_PATHS + ((CONSTRAINT_SOURCE,) if len(records) > len(SOURCE_PATHS) else ())
     matched = set()
     source_checks = []
     for record in records:
         if not isinstance(record, dict) or not isinstance(record.get("path"), str):
             raise ValueError("invalid generation source entry")
-        paths = [path for path in SOURCE_PATHS if record["path"].endswith("/" + path)]
+        paths = [path for path in source_paths if record["path"].endswith("/" + path)]
         if len(paths) != 1 or paths[0] in matched:
             raise ValueError("unknown or duplicate generation source path")
         relative = paths[0]

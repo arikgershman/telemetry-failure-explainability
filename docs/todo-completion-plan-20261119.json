@@ -1,0 +1,1691 @@
+{
+  "plan_version": 1,
+  "created_date": "2026-11-19",
+  "planning_only": true,
+  "objective": "Complete every original TODO requirement with independently verified evidence; preserve unavailable human/historical/GPU gates as explicit blockers.",
+  "plan_document": "docs/todo-completion-plan-20261119.md",
+  "todo_snapshot": {
+    "path": "TODO.md",
+    "sha256": "813cdfa9e5e6ffeef2ee895367ed619f84781122db9ba390ef32a14d176703c2",
+    "checkboxes": 88,
+    "checked": 78,
+    "unchecked": 10,
+    "git_head": "b5bcff96618351019cd030f9a234c4a610fc461c",
+    "warning": "HEAD does not include all current uncommitted/untracked implementation files."
+  },
+  "source_frozen_v3_evidence": "runs/alienware-v3-followup-20261119/readiness.json",
+  "work_packages": [
+    {
+      "id": "P00",
+      "title": "Freeze baseline and reconcile evidence",
+      "predecessors_for_final_acceptance": [],
+      "resources": [
+        "mac_cpu"
+      ],
+      "external_dependencies": [],
+      "implementation_specification": {
+        "path": "docs/todo-completion-plan-20261119.md",
+        "section_starts_with": "P00"
+      }
+    },
+    {
+      "id": "P01",
+      "title": "Repair calibration and physically validated generator",
+      "predecessors_for_final_acceptance": [
+        "P00"
+      ],
+      "resources": [
+        "mac_cpu"
+      ],
+      "external_dependencies": [],
+      "implementation_specification": {
+        "path": "docs/todo-completion-plan-20261119.md",
+        "section_starts_with": "P01"
+      }
+    },
+    {
+      "id": "P02",
+      "title": "Historical certification or approved replacement",
+      "predecessors_for_final_acceptance": [
+        "P00"
+      ],
+      "resources": [
+        "mac_cpu"
+      ],
+      "external_dependencies": [
+        "authentic_original_producer_records",
+        "dataset_scope_decision_if_unrecoverable"
+      ],
+      "implementation_specification": {
+        "path": "docs/todo-completion-plan-20261119.md",
+        "section_starts_with": "P02"
+      },
+      "parallelism_note": "Historical evidence recovery starts immediately. New dataset route additionally requires P01 and an explicit user scope decision.",
+      "conditional_predecessors": [
+        {
+          "when": "Generating an explicitly authorized fresh replacement dataset",
+          "requires": [
+            "P01"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "P03",
+      "title": "Diagnose and version the output protocol",
+      "predecessors_for_final_acceptance": [
+        "P00"
+      ],
+      "resources": [
+        "mac_cpu",
+        "alienware_gpu"
+      ],
+      "external_dependencies": [],
+      "implementation_specification": {
+        "path": "docs/todo-completion-plan-20261119.md",
+        "section_starts_with": "P03"
+      }
+    },
+    {
+      "id": "P04",
+      "title": "Resolve context and freeze inference-identical representation",
+      "predecessors_for_final_acceptance": [
+        "P00",
+        "P03"
+      ],
+      "resources": [
+        "mac_cpu"
+      ],
+      "external_dependencies": [],
+      "implementation_specification": {
+        "path": "docs/todo-completion-plan-20261119.md",
+        "section_starts_with": "P04"
+      },
+      "parallelism_note": "CPU representation prototypes can start before P03; coordinate prompts.py ownership and freeze its final interface after P03."
+    },
+    {
+      "id": "P05",
+      "title": "Quality metrics, real explanation review and baseline audit",
+      "predecessors_for_final_acceptance": [
+        "P00"
+      ],
+      "resources": [
+        "mac_cpu",
+        "human_review"
+      ],
+      "external_dependencies": [
+        "genuine_explanation_review"
+      ],
+      "implementation_specification": {
+        "path": "docs/todo-completion-plan-20261119.md",
+        "section_starts_with": "P05"
+      },
+      "parallelism_note": "Review tooling starts immediately; actual review packets bind final P03/P04 messages and real outputs."
+    },
+    {
+      "id": "P06",
+      "title": "Verify production and prepare new portable bundles",
+      "predecessors_for_final_acceptance": [
+        "P03",
+        "P04",
+        "P05"
+      ],
+      "resources": [
+        "mac_cpu"
+      ],
+      "external_dependencies": [],
+      "implementation_specification": {
+        "path": "docs/todo-completion-plan-20261119.md",
+        "section_starts_with": "P06"
+      },
+      "parallelism_note": "Diagnostic/fresh bundles do not wait for historical certification. Final study-source bundles additionally require P02.",
+      "conditional_predecessors": [
+        {
+          "when": "Publishing the final study-source bundles",
+          "requires": [
+            "P02"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "P07",
+      "title": "Bounded real validation and broader dev inference",
+      "predecessors_for_final_acceptance": [
+        "P06"
+      ],
+      "resources": [
+        "alienware_gpu",
+        "mac_cpu",
+        "human_review"
+      ],
+      "external_dependencies": [],
+      "implementation_specification": {
+        "path": "docs/todo-completion-plan-20261119.md",
+        "section_starts_with": "P07"
+      }
+    },
+    {
+      "id": "P08",
+      "title": "Publish genuine reviewed train/dev preferences",
+      "predecessors_for_final_acceptance": [
+        "P02",
+        "P04",
+        "P07"
+      ],
+      "resources": [
+        "mac_cpu",
+        "human_review"
+      ],
+      "external_dependencies": [
+        "genuine_preference_annotations"
+      ],
+      "implementation_specification": {
+        "path": "docs/todo-completion-plan-20261119.md",
+        "section_starts_with": "P08"
+      },
+      "parallelism_note": "Review-tool implementation starts immediately. Actual annotations bind stable final dataset/prompt hashes to avoid wasted re-review."
+    },
+    {
+      "id": "P09",
+      "title": "Qualify executable training runtime/profile",
+      "predecessors_for_final_acceptance": [
+        "P04",
+        "P08"
+      ],
+      "resources": [
+        "mac_cpu",
+        "alienware_gpu"
+      ],
+      "external_dependencies": [],
+      "implementation_specification": {
+        "path": "docs/todo-completion-plan-20261119.md",
+        "section_starts_with": "P09"
+      },
+      "parallelism_note": "Compatibility research and CPU implementation start immediately. Actual project optimizer qualification requires genuine P08 data, and P11 requires it to pass."
+    },
+    {
+      "id": "P10",
+      "title": "Source-bound adapter inference/evaluation",
+      "predecessors_for_final_acceptance": [
+        "P03",
+        "P04",
+        "P09"
+      ],
+      "resources": [
+        "mac_cpu",
+        "alienware_gpu"
+      ],
+      "external_dependencies": [],
+      "implementation_specification": {
+        "path": "docs/todo-completion-plan-20261119.md",
+        "section_starts_with": "P10"
+      },
+      "parallelism_note": "Adapter validation can be developed against tiny CPU fixtures before P09 GPU qualification. Real adapter checks require a trained artifact."
+    },
+    {
+      "id": "P11",
+      "title": "Run reviewed optimization and adapter dev evaluation",
+      "predecessors_for_final_acceptance": [
+        "P08",
+        "P09",
+        "P10"
+      ],
+      "resources": [
+        "alienware_gpu",
+        "mac_cpu",
+        "human_review"
+      ],
+      "external_dependencies": [],
+      "implementation_specification": {
+        "path": "docs/todo-completion-plan-20261119.md",
+        "section_starts_with": "P11"
+      }
+    },
+    {
+      "id": "P12",
+      "title": "Freeze and execute held-out final study",
+      "predecessors_for_final_acceptance": [
+        "P02",
+        "P06",
+        "P07",
+        "P11"
+      ],
+      "resources": [
+        "mac_cpu",
+        "alienware_gpu",
+        "human_review"
+      ],
+      "external_dependencies": [],
+      "implementation_specification": {
+        "path": "docs/todo-completion-plan-20261119.md",
+        "section_starts_with": "P12"
+      }
+    },
+    {
+      "id": "P13",
+      "title": "Clean reproduction and integration evidence/review",
+      "predecessors_for_final_acceptance": [
+        "P12"
+      ],
+      "resources": [
+        "mac_cpu",
+        "human_review"
+      ],
+      "external_dependencies": [
+        "actual_peer_integration_review"
+      ],
+      "implementation_specification": {
+        "path": "docs/todo-completion-plan-20261119.md",
+        "section_starts_with": "P13"
+      }
+    }
+  ],
+  "checkbox_map": [
+    {
+      "id": "todo-0126",
+      "original_line": 126,
+      "track": "Track 1: MuJoCo Simulation, Failure Injection & Paired Dataset Generation",
+      "snapshot_checked": true,
+      "original_text": "Set up the Franka Emika Panda robot using MuJoCo Menagerie and implement the simulation environment, episode runner, and `FailureConfig`/`FailureEngine` control path.",
+      "text_sha256": "b674546618702fa198acd6dfcf33042d667c0813ea3764bd8a1cc9ccb3382e70",
+      "work_packages": [
+        "P01",
+        "P02",
+        "P13"
+      ],
+      "disposition": "retain_historical_or_implemented_scope_verify_physics_and_provenance_separately",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0127",
+      "original_line": 127,
+      "track": "Track 1: MuJoCo Simulation, Failure Injection & Paired Dataset Generation",
+      "snapshot_checked": true,
+      "original_text": "Implement the optional generic `control_hook` alongside `FailureConfig`, retain `EpisodeResult` attributes and add tuple unpacking; document strict command units, immutable nominal inputs, relative hook time, and verified identity/perturbation behavior.",
+      "text_sha256": "2e98d2e87900dabe08f7fa55964aaaa473439f69dc4cffd04271c9c6c091bb48",
+      "work_packages": [
+        "P01",
+        "P02",
+        "P13"
+      ],
+      "disposition": "retain_historical_or_implemented_scope_verify_physics_and_provenance_separately",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0128",
+      "original_line": 128,
+      "track": "Track 1: MuJoCo Simulation, Failure Injection & Paired Dataset Generation",
+      "snapshot_checked": true,
+      "original_text": "Implement bounded waypoint-based controllers for `pick_up_object` (`approach`, `align`, `grasp`, `lift`) and `transport_object` (`maintain_grasp`, `move_along_path`, `reach_target`).",
+      "text_sha256": "447557b94f79896c5760eaab3200856986a77d1bfae7ae416a6a58f46a8f6ac4",
+      "work_packages": [
+        "P01",
+        "P02",
+        "P13"
+      ],
+      "disposition": "retain_historical_or_implemented_scope_verify_physics_and_provenance_separately",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0129",
+      "original_line": 129,
+      "track": "Track 1: MuJoCo Simulation, Failure Injection & Paired Dataset Generation",
+      "snapshot_checked": true,
+      "original_text": "Step physics at **500 Hz / 0.002 s** and collect telemetry at **50 Hz / 0.02 s**, using the shared `RawTelemetryRow` schema and measured robot/object state.",
+      "text_sha256": "67bcf110f43c8099559c869f592b37ce15372dea2653c9592d360845a805f0d7",
+      "work_packages": [
+        "P01",
+        "P02",
+        "P13"
+      ],
+      "disposition": "retain_historical_or_implemented_scope_verify_physics_and_provenance_separately",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0130",
+      "original_line": 130,
+      "track": "Track 1: MuJoCo Simulation, Failure Injection & Paired Dataset Generation",
+      "snapshot_checked": true,
+      "original_text": "Implement 50 seeded initial-condition IDs per task and generate successful nominal executions for paired dataset collection.",
+      "text_sha256": "80430ed6e948df45a7b82b0064ac194c87b7f24c3983db417e61f926b5789e52",
+      "work_packages": [
+        "P01",
+        "P02",
+        "P13"
+      ],
+      "disposition": "retain_historical_or_implemented_scope_verify_physics_and_provenance_separately",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0131",
+      "original_line": 131,
+      "track": "Track 1: MuJoCo Simulation, Failure Injection & Paired Dataset Generation",
+      "snapshot_checked": true,
+      "original_text": "Implement all five `FailureMode` mechanisms: `position_error`, `orientation_error`, `inadequate_grip_strength`, `early_gripper_release`, and `excessive_speed`. Apply perturbations through `FailureEngine` command transformations rather than modifying recorded telemetry.",
+      "text_sha256": "ac51e931f9ee9f8f2ee0bccf7256760518c653f55b837ba2aa7a78d3218c6b1e",
+      "work_packages": [
+        "P01",
+        "P02",
+        "P13"
+      ],
+      "disposition": "retain_historical_or_implemented_scope_verify_physics_and_provenance_separately",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0132",
+      "original_line": 132,
+      "track": "Track 1: MuJoCo Simulation, Failure Injection & Paired Dataset Generation",
+      "snapshot_checked": true,
+      "original_text": "Calibrate failure configurations and evaluate activation and task failure rates. Select four reliable modes for dataset generation; exclude `excessive_speed` after calibration showed insufficient failure reliability.",
+      "text_sha256": "9688919521e6cc6bf3c0e5ff37370f395e5212140b521474fc65cc74ba510bfa",
+      "work_packages": [
+        "P01",
+        "P02",
+        "P13"
+      ],
+      "disposition": "historical_calibration_checked_but_current_calibration_cli_is_broken_requires_P01",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0133",
+      "original_line": 133,
+      "track": "Track 1: MuJoCo Simulation, Failure Injection & Paired Dataset Generation",
+      "snapshot_checked": true,
+      "original_text": "Implement paired nominal/perturbed execution generation using matching seeds and initial-condition IDs, with acceptance checks, bounded retries, rejection diagnostics, and metadata recording.",
+      "text_sha256": "71dfea4ee1c599196a1bb6cca72b524bc2ff3af52e74206bd1b91df719cf1ed6",
+      "work_packages": [
+        "P01",
+        "P02",
+        "P13"
+      ],
+      "disposition": "retain_historical_or_implemented_scope_verify_physics_and_provenance_separately",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0134",
+      "original_line": 134,
+      "track": "Track 1: MuJoCo Simulation, Failure Injection & Paired Dataset Generation",
+      "snapshot_checked": true,
+      "original_text": "Generate **500 accepted success/failure pairs per task**, covering 50 initial conditions with 10 accepted pairs per condition.",
+      "text_sha256": "eac3454b5ec0d8b2c6ab7a2e5898cecbd4e0f1bf8887006df0e0004f76516dcf",
+      "work_packages": [
+        "P01",
+        "P02",
+        "P13"
+      ],
+      "disposition": "retain_historical_or_implemented_scope_verify_physics_and_provenance_separately",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0135",
+      "original_line": 135,
+      "track": "Track 1: MuJoCo Simulation, Failure Injection & Paired Dataset Generation",
+      "snapshot_checked": true,
+      "original_text": "Balance the four selected failure modes at 125 accepted pairs per mode per task, producing **1,000 pairs and 2,000 telemetry CSVs**.",
+      "text_sha256": "e05ed381fac2e7197860bc127acb1cfafb13d13e98f1286a22547460be2a4f43",
+      "work_packages": [
+        "P01",
+        "P02",
+        "P13"
+      ],
+      "disposition": "retain_historical_or_implemented_scope_verify_physics_and_provenance_separately",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0136",
+      "original_line": 136,
+      "track": "Track 1: MuJoCo Simulation, Failure Injection & Paired Dataset Generation",
+      "snapshot_checked": true,
+      "original_text": "Save telemetry, metadata, episode diagnostics, and generation summaries; complete an initial dataset audit confirming expected file counts, condition coverage, failure-mode balance, and zero reported issues (historical generation/audit evidence).",
+      "text_sha256": "25593ae1fec70ae1879d7fd97053004ab02864cacd2017f140a52c1124b809f6",
+      "work_packages": [
+        "P01",
+        "P02",
+        "P13"
+      ],
+      "disposition": "retain_historical_or_implemented_scope_verify_physics_and_provenance_separately",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0137",
+      "original_line": 137,
+      "track": "Track 1: MuJoCo Simulation, Failure Injection & Paired Dataset Generation",
+      "snapshot_checked": false,
+      "original_text": "Supply the exact archived calibration files and confirm producer source/model/config revisions so these historical runs can be independently reproduced and certified.",
+      "text_sha256": "6827357ab59a14f2d867847ec343a5270ce0750117114daab3843cfc6552fb96",
+      "work_packages": [
+        "P02"
+      ],
+      "disposition": "external_original_records_required",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0195",
+      "original_line": 195,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": true,
+      "original_text": "Restore all three GitHub release assets using pinned IDs/sizes/SHA-256 digests, preserve archived source bytes, retain published clocks separately as unverified inputs, and recover an explicitly labeled accepted-configuration catalogue. Cover offline/download behavior, archive safety/resource limits, corruption, immutable destinations, and failed-publication cleanup with CPU tests.",
+      "text_sha256": "f09827186917f5df7e2fe0e25080052da507d17787402481c97641be63c77137",
+      "work_packages": [
+        "P02",
+        "P13"
+      ],
+      "disposition": "preserve_existing_contracts_and_dated_evidence_reverify_final_source",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0196",
+      "original_line": 196,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": true,
+      "original_text": "Verify fresh nominal deterministic replay/reset for both tasks at seed 723, initial condition 0, and injected replay for one released configuration per calibrated failure mode per task, each repeated twice. Numeric telemetry agrees within absolute tolerance `1e-8`, with no relative tolerance. This is representative replay evidence, not replay certification of every stored CSV.",
+      "text_sha256": "5b77c175dc593f76c79f841b0eb23dabb0305d3b929a62d3c1b0cbd7ca30e710",
+      "work_packages": [
+        "P02",
+        "P13"
+      ],
+      "disposition": "preserve_existing_contracts_and_dated_evidence_reverify_final_source",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0197",
+      "original_line": 197,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": true,
+      "original_text": "Validate stored paired initial-state identities, metadata/diagnostic consistency, and activation diagnostics; test command isolation and activation boundaries for all five mechanisms, including `excessive_speed`.",
+      "text_sha256": "841ae8e239172674a3b9e85ed70eb88b9a65c43517ae4486512a7d8ccd517cf9",
+      "work_packages": [
+        "P02",
+        "P13"
+      ],
+      "disposition": "preserve_existing_contracts_and_dated_evidence_reverify_final_source",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0198",
+      "original_line": 198,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": true,
+      "original_text": "Record canonical telemetry/task onset in absolute simulator time as `telemetry_start_sim_s` for newly generated episodes.",
+      "text_sha256": "c5068154c73787636ab46c446ccbf8b3e8ed443140af1fc601c494b3657dd08d",
+      "work_packages": [
+        "P02",
+        "P13"
+      ],
+      "disposition": "preserve_existing_contracts_and_dated_evidence_reverify_final_source",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0199",
+      "original_line": 199,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": false,
+      "original_text": "Recover and verify archived per-run task origins, use the new timing diagnostics for fresh runs, and verify full pre-injection trajectory agreement. Recording a new diagnostic does not certify old CSVs.",
+      "text_sha256": "31140742686b3855a12f7c3299d0834277d9e861f8f1909a98d85436b8899fa4",
+      "work_packages": [
+        "P02"
+      ],
+      "disposition": "archived_origins_full_prefix_verification_pending",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0200",
+      "original_line": 200,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": true,
+      "original_text": "Verify real nominal success across all 50 initial conditions per task at seed 723. Independently check final pickup object rise exceeds 0.12 m and transport XY placement is within 0.04 m of the expected 0.15 m displacement.",
+      "text_sha256": "c02bde7c8868c33a883cffbcb1b3983a4cdf34cbdac938d7b82c5c7ffa0c61fe",
+      "work_packages": [
+        "P02",
+        "P13"
+      ],
+      "disposition": "preserve_existing_contracts_and_dated_evidence_reverify_final_source",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0201",
+      "original_line": 201,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": true,
+      "original_text": "Check all released traces using canonical CSV validation, including logging cadence, schema, ordered stages, paired joint dimensions, quaternion normalization/sign continuity, and metadata file-reference reuse. Inspect units and measured force sources in the logger; this does not independently calibrate force accuracy.",
+      "text_sha256": "31271f918f22131229089d60f4969f4b3b02b675daa35aad50c22b3837ed7fc6",
+      "work_packages": [
+        "P02",
+        "P13"
+      ],
+      "disposition": "preserve_existing_contracts_and_dated_evidence_reverify_final_source",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0202",
+      "original_line": 202,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": false,
+      "original_text": "Independently verify physical outcomes for all stored failure runs using machine-readable outcome measurements from the producer; controller outcome strings alone are insufficient.",
+      "text_sha256": "ae2d5e81c1da0c813948e57ea7babd19b8b0f3282f24d76e38c6d6163413ac95",
+      "work_packages": [
+        "P02"
+      ],
+      "disposition": "independent_all_stored_failure_outcomes_pending",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0203",
+      "original_line": 203,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": true,
+      "original_text": "Use `build_paired_bt()` as the acceptance gate for stage coverage. Test that ordered partial failures pass without changing source CSVs and that skipped stages and incomplete success traces are rejected.",
+      "text_sha256": "6376ed595095a0e9085553d21f2e8f2d79ff31ecb3172a69ac8be4d09ab62f22",
+      "work_packages": [
+        "P02",
+        "P13"
+      ],
+      "disposition": "preserve_existing_contracts_and_dated_evidence_reverify_final_source",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0204",
+      "original_line": 204,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": true,
+      "original_text": "Pass full-release coverage and parser acceptance for all 1,000 pairs. Each task has 500 pairs across 50 initial conditions and 125 pairs per calibrated mode.",
+      "text_sha256": "619b91a7097c1e3347bacd83fda61d72583560c5042f499706501e1f336b5d1a",
+      "work_packages": [
+        "P02",
+        "P13"
+      ],
+      "disposition": "preserve_existing_contracts_and_dated_evidence_reverify_final_source",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0205",
+      "original_line": 205,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": true,
+      "original_text": "Implement deterministic train/dev/test splits grouped by initial condition (35/5/10 per task and 700/100/200 total pairs), keeping paired and repeated executions together and checking task/failure-mode coverage, duplicate diagnostics, and split isolation.",
+      "text_sha256": "060dd4811792a44ea347c01132be2472cd822eb308e5d9ea38d7361573cdb699",
+      "work_packages": [
+        "P02",
+        "P13"
+      ],
+      "disposition": "preserve_existing_contracts_and_dated_evidence_reverify_final_source",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0206",
+      "original_line": 206,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": true,
+      "original_text": "Add automated reset/replay, failure-injection boundary/isolation, dataset validation, split, and checksum tests. Record the exclusion of `excessive_speed` from the accepted dataset due to insufficient failure reliability.",
+      "text_sha256": "dcddba0cde8faa0ccbc406251a01a210f6e18b4ff0698a1c249b7826d5f088c8",
+      "work_packages": [
+        "P02",
+        "P13"
+      ],
+      "disposition": "preserve_existing_contracts_and_dated_evidence_reverify_final_source",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0207",
+      "original_line": 207,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": true,
+      "original_text": "Add 12 CPU-only generator retry tests using fake episode results: inactive injection, injected success, and empty telemetry rejection; preserved condition/mode and paired inputs; accepted-only CSV/diagnostic output; attempt exhaustion and partial-run reporting; and immediate abort for failed/incomplete nominal episodes. These exercise the real generator and CSV I/O without MuJoCo or model assets.",
+      "text_sha256": "cbce3b150d69191e5f6b9f04b5d360a9d7ec686c484f1e5101a82ec73cc6379b",
+      "work_packages": [
+        "P02",
+        "P13"
+      ],
+      "disposition": "preserve_existing_contracts_and_dated_evidence_reverify_final_source",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0208",
+      "original_line": 208,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": true,
+      "original_text": "Implement and verify the runner's optional `control_hook`: CPU command validation/isolation plus native identity and position/orientation/gripper/speed acceptance for both tasks. A `None` result retains the nominal command; motion commands compose with `FailureConfig` and actuator failure overrides apply afterward.",
+      "text_sha256": "7e33514f93dc645ea0ae0359284ecf261387213dab9abba3139ff33b18fbb6bd",
+      "work_packages": [
+        "P02",
+        "P13"
+      ],
+      "disposition": "preserve_existing_contracts_and_dated_evidence_reverify_final_source",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0209",
+      "original_line": 209,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": true,
+      "original_text": "Implement manifest/checksum generation and verification, including changed/missing/unexpected files, same-size corruption, unsafe inventory paths, source fingerprints, split indices, validation records, and explicit verification limitations. Refuse to freeze an incompatible release.",
+      "text_sha256": "189946e29bd23f83de12d415f1637048d67774a236dcf00fcdaa5d855bd4954c",
+      "work_packages": [
+        "P02",
+        "P13"
+      ],
+      "disposition": "preserve_existing_contracts_and_dated_evidence_reverify_final_source",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0210",
+      "original_line": 210,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": true,
+      "original_text": "Regenerate the release splits at seed 723, publish task-specific manifest files locally, and verify their layout against the Track 3 tuner and Track 4 evaluator.",
+      "text_sha256": "c8cf39e34017bc0588f7b74dd76f40df923e305a96d129ffc3ad56cecbfe10b9",
+      "work_packages": [
+        "P02",
+        "P13"
+      ],
+      "disposition": "preserve_existing_contracts_and_dated_evidence_reverify_final_source",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0211",
+      "original_line": 211,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": true,
+      "original_text": "Generate the archived dataset manifest and verify all 2,006 inventoried files against their SHA-256 checksums.",
+      "text_sha256": "4c54224cc0149780b8d15fa47a70ede5aa27cfe0870d462d199484a1c50c542c",
+      "work_packages": [
+        "P02",
+        "P13"
+      ],
+      "disposition": "preserve_existing_contracts_and_dated_evidence_reverify_final_source",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0212",
+      "original_line": 212,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": true,
+      "original_text": "Verify that the `dataset-v1` release tag points to `73eeb975c2593e7fe8ad7a8a31a6253693303784` and pins MuJoCo Menagerie to `f3b6013629c7b94f8ee93fd977b161fa8350f9bc`.",
+      "text_sha256": "644d61032bfca8599add9fb0b506674f10c147cc5e997d8fbcf7165e3ea5cc71",
+      "work_packages": [
+        "P02",
+        "P13"
+      ],
+      "disposition": "preserve_existing_contracts_and_dated_evidence_reverify_final_source",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0213",
+      "original_line": 213,
+      "track": "Track 2: Simulation Validation & Dataset Finalization",
+      "snapshot_checked": false,
+      "original_text": "Confirm the exact generator working tree, model and calibration inputs used for the ZIP, and obtain per-run task time origins before final certification.",
+      "text_sha256": "61e29e4890d007f22327f9f1631a65d06c0fe0586dd349e90526a24907172fa9",
+      "work_packages": [
+        "P02"
+      ],
+      "disposition": "original_producer_calibration_runtime_config_attestation_pending",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0297",
+      "original_line": 297,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "**Oct. 30:** run the existing parser on the sample, define batch/alignment APIs, and add synthetic transport and timing edge cases. Verification and public interfaces are recorded below.",
+      "text_sha256": "a41750e9f029ed00bb2fae4cf0dfbc13332ce4bbb320ec70a0de72d57359f792",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0298",
+      "original_line": 298,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "**Nov. 6 deliverable, completed Nov. 18:** rerun nine-candidate grouped dev sweeps on 50 pairs/task and version the selected `k=5;threshold_scale=1` configuration and selection receipt. No test telemetry was used for selection.",
+      "text_sha256": "ecdedea975c3b1c450d73cdcea1846eabc25ccd700d30e400ea9459bb7e75300",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0299",
+      "original_line": 299,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "**Nov. 13 deliverable, completed Nov. 18:** publish all 1,000 accepted pairs with computed observed-stage divergence, unavailable suffixes, compression/event-retention and raw-reference numerical-onset diagnostics. See [production evidence](docs/production-parser.md).",
+      "text_sha256": "ba63c55e49c5e243b624584d590411387510ea65f6ffbc75dd7d58f51523c3cf",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0303",
+      "original_line": 303,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Rebuilt the checked-in pickup pair with the existing parser and reproduced all four sample files byte for byte in `data/processed/track3-oct30/mock/`. Each raw trace has 400 rows; the BT retains 31 success and 34 failure samples, including the 5.08/5.10/5.12 s grip-drop neighborhood. Shared schemas, default configuration, and versioned samples are unchanged.",
+      "text_sha256": "a7d09de9c2f99f1433f72f80fa5fc97d830613560923c0334d97dcffe8aec2ca",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0304",
+      "original_line": 304,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Added `build_paired_bts(metadata, data_dir, config) -> BatchBuildResult` in `parser/pipeline.py`. It accepts `Sequence[MetadataRow]` and `CompressionConfig`, reuses `build_paired_bt()`, and returns ordered `trees` and `errors` tuples. Each input pair produces exactly one tree or a `PairBuildError` containing its ID, source filenames, exception type, and message. Duplicate IDs reject the batch; an empty sequence returns empty tuples. File/validation failures do not prevent later pairs from being processed. Metadata CSV errors still raise from `read_metadata_csv()` before batch construction.",
+      "text_sha256": "d09f3e2839201b4deafc5d560cdb97959996c34d5e402c901df2c87acae5ea99",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0305",
+      "original_line": 305,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Added `align_subtask_samples(node: SubtaskBT) -> AlignedSubtask` in `parser/divergence.py`. It returns the shared progress grid, failure-run absolute timestamps, and success/failure arrays for every `TelemetryFeature`; scalar shapes are `(n,)`, vector shapes `(n, components)`. Interpolation is linear for continuous features, previous-value for gripper closure, and normalized/sign-aligned shortest-path SLERP for quaternions. A singleton stays constant over its partner's grid; two singletons compare once at progress zero. Queries within `1e-12` progress of an observed sample snap to that sample to avoid roundoff-induced transitions; the grid remains the unrounded sorted union. Inputs are not mutated, and interpolated values are comparisons rather than new observations.",
+      "text_sha256": "446cdf0bec4a8723c08b2a667d6a4e062ad6384ed5897ac9f82f41b4f7ab1b41",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0306",
+      "original_line": 306,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Added synthetic tests for both task templates, transport semantics, seven-joint arrays, unequal stage lengths/sample counts, shifted timestamps, singleton stages, gripper transitions, quaternion sign/shortest-path behavior, malformed or missing files, and missing/repeated/reordered stages on either side. The additional completion audit on Oct. 23 passes all **97 tests with warnings treated as errors**, including the original parser/reproducibility tests, 100 seeded analytic-motion cases, raw-validation failures, and batch error ordering/preflight checks.",
+      "text_sha256": "bb34e2260cf474277ce4537f2ba5d6f30ef36cb1fd67b869d8f0aadf9c2276fa",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0307",
+      "original_line": 307,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Completed an independent mixed-task stress check: 100 synthetic pairs (50 per task), one through nine joints, unequal stage lengths, and `k=0/1/5/100`, for 400 successful pair builds and 1,400 aligned subtasks. All trees round-trip through the schema, all aligned values are finite, and input files remain unchanged. Fresh generation reproduces all four sample files byte for byte, and the documented example passes verbatim. Fixed a small-angle quaternion approximation exposed by this audit using stable SLERP weights; differently sampled constant-angular-speed motion now agrees within numerical tolerance. Evidence is in `runs/track3-oct30/verification.json`; these synthetic parameter checks are validation, not train/dev tuning.",
+      "text_sha256": "de85934e4609669ae86a322c91ad48ae445348b7e9dccbbb55c492e836e12f5b",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0342",
+      "original_line": 342,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Implemented exported `parse_dataset()` and `scripts/parse_dataset.py`, producing schema-valid `pair_<pair_id>_bt.json` files and a separate `parse_report.json`. Reports record per-pair rejections, source/output/configuration hashes, and compression diagnostics. Staged publication and fresh-output-directory checks prevent partial or stale batches; rejected source files are left untouched.",
+      "text_sha256": "6e0f35c4d211f71624bb97c1c4bd5bac652221298523a11efceb1c5f9817ceb9",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0343",
+      "original_line": 343,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Added complete `configs/parser.yaml`, preserving the existing defaults and byte-identical sample output. All divergence objects remain explicitly uncomputed. Settings are provisional, not calibrated on the real dataset.",
+      "text_sha256": "ddcccef0a64465a2a5dd784f4dc4205d947dff5a2cb42eb508c116bd5a81eede",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0344",
+      "original_line": 344,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Added raw-reference compression diagnostics: per-stage counts, compression ratios, fixed-reference event-center/neighborhood retention, reconstruction errors for every feature, and leakage-free JSON payload sizes in characters/UTF-8 bytes (not model tokens).",
+      "text_sha256": "92ef41c41989154dd2758e2c253bbc5c40032de094f363246f28d3dabf924034",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0345",
+      "original_line": 345,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Implemented `scripts/tune_compression.py` and grouped-split validation. The sweep checks all manifest groups before opening telemetry, reads only the requested train/dev split, keeps reference-event thresholds fixed across candidates, and never changes configuration automatically. A reproducible synthetic demonstration covers both tasks, three seeds, `k=[0,2,5]`, and threshold scales `[0.5,1,2]`; this verifies the tools, not real-data calibration.",
+      "text_sha256": "b8dbc3db06b2fdde0aa3bc0e2e53ef0e2cf18a2f2b7552152939ecf60aa665a0",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0346",
+      "original_line": 346,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Before partial-trace support, ran the parser against all 1,000 pairs in Gili's supplied `dataset_v1.zip`: pickup **384 written / 116 rejected**, transport **226 written / 274 rejected**. All 390 rejections are incomplete failure-stage sequences. The 610 compatible pairs retain 110,283 of 448,309 raw observations and all 71,708 fixed-reference feature-event neighborhoods. All output BTs validate; archive/source hashes are unchanged. Task outputs are separate because task-local pair IDs collide.",
+      "text_sha256": "48c60677efd1f5d1b25d6e5e186dbc587cd138b63f7004c82b8790e1aec779d3",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0347",
+      "original_line": 347,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Verified existing Track 4 baseline consumption and all **152 Track 3 tests** with warnings treated as errors at that handoff. Its full suite had **279 passed / 1 Track 4 failure**: `test_label_vocabularies_match_shared_schemas`, because the evaluator vocabulary then omitted `excessive_speed`. This is historical evidence, not current test status.",
+      "text_sha256": "9e628a17c423ae573638bb7d35ea6ba64967c4d28a5c958c84f6307829679ce2",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0348",
+      "original_line": 348,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Obtain grouped task-manifest inputs and run the nine-candidate real dev sweeps (reported by the Nov. 17 Track 2 handoff); both tasks recommend `k=5;threshold_scale=1`.",
+      "text_sha256": "9d2df61a2919f4c56a7057f9dcae915e0308eaffd7627abc29799e87146948f9",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0349",
+      "original_line": 349,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Verify restored inputs, rerun the dev sweeps, and version production compression in `configs/parser-production-v1.yaml` with `configs/parser-production-v1.selection.json`. Published full conversion at `data/processed/production-v1-20261118/`; test labels remain held out from tuning and model evaluation.",
+      "text_sha256": "6cab7d147035e78b0ff6f289ff3bb7c7ff754661cf5e3dd282e8c3edf174712c",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0371",
+      "original_line": 371,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Extend in-memory batch construction for both task templates with clear per-pair errors. Preserve original timestamps, semantic metadata, structural alignment, and all existing CSV/schema validation. Keep the existing `build_paired_bt()` default behavior (uncomputed divergence). Test unequal durations/counts, missing/repeated/reordered subtasks, and invalid pair files.",
+      "text_sha256": "c46d06f6a63cdd68acf40b38761c46053a88c58ec05929372ca9a02602e5d961",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0372",
+      "original_line": 372,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Finish dataset serialization, parse/compression reporting, parser configuration, and the CLI. Preserve the existing API and sample reproducibility; explicitly report uncomputed divergence.",
+      "text_sha256": "1ff01c9be3449f43d88863d0bd4b4aec24163fd253290033a53a5bd98b72adad",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0373",
+      "original_line": 373,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Add divergence as an explicit second pipeline stage using `scripts/enrich_divergence.py`, `parser/divergence_metrics.py`, and `configs/divergence.yaml`. Validate every input before staged publication into a separate fresh directory; retain source/output/config hashes and computed/unavailable counts in `divergence_report.json`.",
+      "text_sha256": "ecc4fbd5cfb95d015aceb6c13557f2347c1d24b3b20827d4ce2146bc173335c0",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0374",
+      "original_line": 374,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Retain first/last rows, up to `k` interior samples, and major-event neighbors `t-1/t/t+1`; compare adjacent rows only within a consecutive subtask. Preserve strict `>` threshold semantics, sorted deduplication, clipping, and `k=0` behavior. Existing quaternion compression uses component deltas; any replacement needs explicit regression evidence. Verified by the existing parser regression suite on Oct. 23.",
+      "text_sha256": "e4461c3f7e78b83725f379f17a4cba335c0bb62d84a5523cfcb4cf040aa65c14",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0375",
+      "original_line": 375,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Implement a documented `k`/event-threshold sweep with raw-reference compression/event-retention and prompt-size measurements, preserving the mock's 5.08/5.10/5.12 s grip-drop neighborhood and grouped split isolation. The tool and synthetic demonstrations are verified; Track 2 reports completed real dev sweeps.",
+      "text_sha256": "f37478b89c0253b42c604604bd2f6cec2fb200bd18815947b41a1a3bb3a4d87d",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0376",
+      "original_line": 376,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Publish the final production compression choice with fresh dev-sweep evidence and convert all 1,000 accepted pairs with that versioned configuration. Preserved mock defaults and held-out tuning isolation; all 2,004 generated artifacts verified against the production receipt.",
+      "text_sha256": "3c2ec14adcf39a767a9abfd9f4f5ad3f13590bfe4e5d841f07d0e8b4cd8d3e1e",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0377",
+      "original_line": 377,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Implement deterministic **within-subtask alignment**: stages followed by a transition use `u=(t-t_start)/(t_end-t_start)` and the union of retained progress values; the final observed stage uses common stage-relative elapsed time without extrapolation, including when failure reached the final expected stage. Unobserved stages are explicitly not comparable. Interpolate continuous features linearly, use previous-value closure and normalized/sign-aligned shortest-path quaternion interpolation. Never cross stage boundaries. Keep observed durations separate from sensor deltas. See the parser handoff for coordinate, singleton, and numerical-tolerance rules.",
+      "text_sha256": "3a848e81be1a523a5216c18a3d9528d83fab891be0ad6138f9f20e4ac6703b82",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0378",
+      "original_line": 378,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Define and implement `delta_f(u)=max_j(abs(failure_f,j(u)-success_f,j(u)))` (one component for scalars), then `max_abs_deltas[f]=max_u(delta_f(u))` for all `TelemetryFeature` values. Quaternion deltas are dimensionless component differences after sign alignment, not radians. First divergence is the earliest grid point strictly exceeding a configured per-feature threshold, mapped back to the **failure run's absolute timestamp**. Keep paired-trace thresholds separate from compression's adjacent-row thresholds; identical traces produce zero deltas and null onset.",
+      "text_sha256": "4c2a8926af831274bea518aebd77d5003578b2002b2e7f8b18cf10a4a140bbb4",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0379",
+      "original_line": 379,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Test the sample's **5.10 s / 12 N** grip event, threshold equality, identical traces, schema round-trip, complete threshold configuration, non-mutation, observed/unobserved enrichment states, and main/baseline prompt compatibility.",
+      "text_sha256": "ba8812445a792bdedc9707cba9bccbdd4533f5ab569810a6247ded2f128c7139",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0380",
+      "original_line": 380,
+      "track": "Track 3: Behavior Tree Builder & Deterministic Divergence Function",
+      "snapshot_checked": true,
+      "original_text": "Extend metric-level tests for scalar/vector offsets, shifted/differently sampled traces, quaternion `q` versus `-q`, and deterministic publication. Raw-reference diagnostics report 1,309 matching numerical crossings, zero missed/extra crossings and maximum onset error 0 s; feature maximum-delta errors remain nonzero. Grid onset is not physical fault onset. All 259 parser tests passed with warnings treated as errors.",
+      "text_sha256": "4765cff88e41ae8f8472cb3abe558098678efcc9c886cc69df64497101dc85fc",
+      "work_packages": [
+        "P06",
+        "P13"
+      ],
+      "disposition": "completed_reuse_existing_publication_unless_inputs_or_parser_change",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0437",
+      "original_line": 437,
+      "track": "Track 4: Rule-Based Baseline (Baseline 1) & Evaluation Pipeline",
+      "snapshot_checked": true,
+      "original_text": "Build subtask-aware rules for position offset, orientation mismatch, low grip, premature opening, and excessive speed, using only observable failure telemetry and declared task constants. Use object/EE relative geometry where possible; identify absent target/desired-pose information explicitly and abstain when evidence cannot distinguish a mode. Do not substitute label-derived target values. The released real dataset covers four calibrated failure modes; excessive_speed remains supported by the rule interface but has no accepted dataset examples.",
+      "text_sha256": "804dc89a8c93dbc8c5910007923869137895b9b560030ad58522cf192ebb7739",
+      "work_packages": [
+        "P05",
+        "P13"
+      ],
+      "disposition": "preserve_implementation_extend_quality_review_and_regression_coverage",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0438",
+      "original_line": 438,
+      "track": "Track 4: Rule-Based Baseline (Baseline 1) & Evaluation Pipeline",
+      "snapshot_checked": true,
+      "original_text": "Define precedence for competing rules and `abstain` for ambiguous/unsupported cases. Generate a concise causal template identifying predicted mode/stage and measured evidence with timestamps/units. Test all five modes, competing symptoms, benign approach/open-gripper behavior, and no-evidence input.",
+      "text_sha256": "7dc03d97d9f758e6c50ada0ee77f687636f67c6e1e778c3b629a4ce6d54864a7",
+      "work_packages": [
+        "P05",
+        "P13"
+      ],
+      "disposition": "preserve_implementation_extend_quality_review_and_regression_coverage",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0439",
+      "original_line": 439,
+      "track": "Track 4: Rule-Based Baseline (Baseline 1) & Evaluation Pipeline",
+      "snapshot_checked": true,
+      "original_text": "Implement the shared JSONL validator and strict `(pair_id, model_variant)` joins. Reject duplicates/unknown IDs; account for missing/invalid outputs instead of silently dropping them. Test empty inputs and classes absent from a small evaluation set.",
+      "text_sha256": "72b966a7ca72a76339d01d46d5b0f8146771ebeb10db684b2eb6f35b01544847",
+      "work_packages": [
+        "P05",
+        "P13"
+      ],
+      "disposition": "preserve_implementation_extend_quality_review_and_regression_coverage",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0440",
+      "original_line": 440,
+      "track": "Track 4: Rule-Based Baseline (Baseline 1) & Evaluation Pipeline",
+      "snapshot_checked": true,
+      "original_text": "Report failure-mode accuracy and macro-F1 across truth-supported classes. Retain all five schema labels in per-class/confusion output and the fixed-label macro average; the four-class release gives `excessive_speed` zero truth support, so it is excluded from the observed-class macro average. Count abstentions/missing predictions as incorrect for accuracy and missed true classes for recall. Compute optional onset error only where a defined prediction timestamp and independent reference exist; injection time and observed divergence are different events.",
+      "text_sha256": "9b5d2609c9592ab920f62bdad93acf79a326a656efc02d8a225666d2fa1f3d0a",
+      "work_packages": [
+        "P05",
+        "P13"
+      ],
+      "disposition": "preserve_implementation_extend_quality_review_and_regression_coverage",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0441",
+      "original_line": 441,
+      "track": "Track 4: Rule-Based Baseline (Baseline 1) & Evaluation Pipeline",
+      "snapshot_checked": true,
+      "original_text": "Verify cited evidence against actual allowed failure observations with numeric tolerances; report unsupported evidence separately. The evaluator's `--bt-dir` adapter consumes the dictionary returned by `to_failure_only()` directly.",
+      "text_sha256": "9df0494ab18497abafc07b1040f1680df06a2e0ba02156c6dc4855f978fd7a80",
+      "work_packages": [
+        "P05",
+        "P13"
+      ],
+      "disposition": "preserve_implementation_extend_quality_review_and_regression_coverage",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0442",
+      "original_line": 442,
+      "track": "Track 4: Rule-Based Baseline (Baseline 1) & Evaluation Pipeline",
+      "snapshot_checked": true,
+      "original_text": "Prepare a seeded, blinded human rubric for causal correctness, evidence support, and clarity. Prominently label stub-backend metrics synthetic; automated label accuracy does not measure explanation quality.",
+      "text_sha256": "7366a294dbefdc668e15d782c486fe273774f1039e65bb587b57ef0a41693b2c",
+      "work_packages": [
+        "P05",
+        "P13"
+      ],
+      "disposition": "preserve_implementation_extend_quality_review_and_regression_coverage",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0443",
+      "original_line": 443,
+      "track": "Track 4: Rule-Based Baseline (Baseline 1) & Evaluation Pipeline",
+      "snapshot_checked": true,
+      "original_text": "Preserve available runtime/token/config provenance in inference run manifests rather than adding it to the strict prediction schema.",
+      "text_sha256": "67ce8f36d448daaae352ac8ded07c369abbe0c0af4c7cbbadd306945d6402363",
+      "work_packages": [
+        "P05",
+        "P13"
+      ],
+      "disposition": "preserve_implementation_extend_quality_review_and_regression_coverage",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0444",
+      "original_line": 444,
+      "track": "Track 4: Rule-Based Baseline (Baseline 1) & Evaluation Pipeline",
+      "snapshot_checked": true,
+      "original_text": "Plot raw success/failure telemetry, retained samples, and computed divergence with subtask boundaries, units, legends, and distinct injection/onset markers. Distinguish uncomputed comparisons from unavailable suffix stages; test headless artifacts and plotted data/axes.",
+      "text_sha256": "ada3f5a4d2d450a3e0a0d7acde5b352e8edadd2428965884fe009e2fea42fbac",
+      "work_packages": [
+        "P05",
+        "P13"
+      ],
+      "disposition": "preserve_implementation_extend_quality_review_and_regression_coverage",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0445",
+      "original_line": 445,
+      "track": "Track 4: Rule-Based Baseline (Baseline 1) & Evaluation Pipeline",
+      "snapshot_checked": true,
+      "original_text": "Verify the reusable CPU smoke against all seven public CLIs with fresh mock telemetry, rules plus three stubs, evidence-enabled evaluation, provenance, and plots. The integration suite includes a nondefault-seed run with network and optional physics/model imports blocked; see the integration gate below.",
+      "text_sha256": "f29b82794f3427df5db6c32b4a28ea088654c5d6da4e6cf19e910f5c1e2cad4d",
+      "work_packages": [
+        "P05",
+        "P13"
+      ],
+      "disposition": "preserve_implementation_extend_quality_review_and_regression_coverage",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0446",
+      "original_line": 446,
+      "track": "Track 4: Rule-Based Baseline (Baseline 1) & Evaluation Pipeline",
+      "snapshot_checked": true,
+      "original_text": "Complete the CPU real-MuJoCo producer and stored full-dataset integration gates, with explicit context-refusal and archival-certification limitations.",
+      "text_sha256": "8b89ccd52d6ac839fc2b046550a886e6788272fc391d3f7fe14d3a5256a39ee6",
+      "work_packages": [
+        "P05",
+        "P13"
+      ],
+      "disposition": "preserve_implementation_extend_quality_review_and_regression_coverage",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0447",
+      "original_line": 447,
+      "track": "Track 4: Rule-Based Baseline (Baseline 1) & Evaluation Pipeline",
+      "snapshot_checked": false,
+      "original_text": "Execute comparable real-HF generation and the later held-out study. Synthetic smoke success cannot establish these results.",
+      "text_sha256": "4e070fb65deb36a2dd1d46b2088c07a1a0cce7ca8ef8f8669c267f727a8954e4",
+      "work_packages": [
+        "P00",
+        "P07",
+        "P12"
+      ],
+      "disposition": "real_smoke_exists_final_study_pending",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0466",
+      "original_line": 466,
+      "track": "Track 5: LLM Reasoning Harness & Prompt Baselines (Baselines 2, 3, and Main Model)",
+      "snapshot_checked": true,
+      "original_text": "**Oct. 30:** create the model adapter, mock inference backend, prompt views, and a compute/access smoke plan. Implemented in `src/telemetry_reasoning/models/llm.py`, `src/telemetry_reasoning/models/prompts.py`, `configs/llm.yaml`, the three prompt templates, and `scripts/run_llm.py`; see the [Track 5 handoff and smoke plan](src/telemetry_reasoning/models/README.md).",
+      "text_sha256": "900b941e1d0b4e1092222faca35eb5dea21c9b28565ced52f13abd63dc2812b0",
+      "work_packages": [
+        "P03",
+        "P04",
+        "P08",
+        "P09",
+        "P10",
+        "P13"
+      ],
+      "disposition": "preserve_implemented_or_historical_scope_actual_optimizer_remains_separate",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0467",
+      "original_line": 467,
+      "track": "Track 5: LLM Reasoning Harness & Prompt Baselines (Baselines 2, 3, and Main Model)",
+      "snapshot_checked": true,
+      "original_text": "**Nov. 6 — complete, verified Nov. 16:** real HF Baselines 2 and 3 ran on the Alienware with identical model/settings. CPU-only revalidation under the explicit `json_or_fenced_v1` policy accepts both exact saved responses with validated evidence; the original strict rejection, raw text, and generation provenance remain unchanged. Parser, leakage, resource, and replay checks pass. See the [acceptance receipt and limitations](docs/track5-nov06-acceptance.md). No further GPU work is needed for this milestone.",
+      "text_sha256": "5396728d18969f29b2462f07f8d0282047a35150f7d37913c55169a60a1538b2",
+      "work_packages": [
+        "P03",
+        "P04",
+        "P08",
+        "P09",
+        "P10",
+        "P13"
+      ],
+      "disposition": "preserve_implemented_or_historical_scope_actual_optimizer_remains_separate",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0468",
+      "original_line": 468,
+      "track": "Track 5: LLM Reasoning Harness & Prompt Baselines (Baselines 2, 3, and Main Model)",
+      "snapshot_checked": false,
+      "original_text": "**Nov. 13:** run the main paired-BT-plus-divergence variant, deliver comparable four-variant evaluation inputs with Track 4, and validate the DPO/LoRA data formatter.",
+      "text_sha256": "1e2ab3a1cca4c8a6f6f24d17eb3a6d2764239a25e7655d056da5a7ce6963a90d",
+      "work_packages": [
+        "P00",
+        "P03",
+        "P04",
+        "P05",
+        "P07",
+        "P08"
+      ],
+      "disposition": "execution_and_formatter_exist_reconcile_milestone_scope",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0505",
+      "original_line": 505,
+      "track": "Track 5: LLM Reasoning Harness & Prompt Baselines (Baselines 2, 3, and Main Model)",
+      "snapshot_checked": true,
+      "original_text": "Configure an exact Hugging Face Llama-3.1-8B checkpoint and revision, tokenizer, device/dtype, context budget, and optional supported quantization. Record whether the base or instruction-tuned checkpoint is used and use the same choice for all variants. Check access/compute early; provide a stub backend so CPU unit tests never download weights or require credentials. Configuration, access, and real CUDA/BF16 baseline execution are verified; the resource guard still rejects full-model loading on the 16 GiB Mac.",
+      "text_sha256": "30710d679bf289d6bca098c61e750bb5ded1855a551f3a4afb3e9dc01e9c5dc5",
+      "work_packages": [
+        "P03",
+        "P04",
+        "P08",
+        "P09",
+        "P10",
+        "P13"
+      ],
+      "disposition": "preserve_implemented_or_historical_scope_actual_optimizer_remains_separate",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0506",
+      "original_line": 506,
+      "track": "Track 5: LLM Reasoning Harness & Prompt Baselines (Baselines 2, 3, and Main Model)",
+      "snapshot_checked": true,
+      "original_text": "Implement consistent tokenization, chat formatting where applicable, batched inference, seeded decoding, output limits, and validated structured predictions. Handle overlong prompts explicitly and consistently; do not silently truncate task stages or divergence evidence. Capture invalid outputs as errors without inventing labels.",
+      "text_sha256": "3760d0eb168cfdcebefc2e60cc0c83feceebb4092945fea1958c797fc9e26499",
+      "work_packages": [
+        "P03",
+        "P04",
+        "P08",
+        "P09",
+        "P10",
+        "P13"
+      ],
+      "disposition": "preserve_implemented_or_historical_scope_actual_optimizer_remains_separate",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0507",
+      "original_line": 507,
+      "track": "Track 5: LLM Reasoning Harness & Prompt Baselines (Baselines 2, 3, and Main Model)",
+      "snapshot_checked": true,
+      "original_text": "Design the requested Chain-of-Thought-style prompts around examining task expectations, observable deviations, and plausible causes; request a final diagnosis with a concise evidence-grounded rationale and the shared JSON fields. Keep the instruction/output format and decoding settings fixed across variants so the experimental difference is available input information.",
+      "text_sha256": "0c8d8bc2f507e5591e577a838320385aaa770c0ba966adb49eb1bb028f53815c",
+      "work_packages": [
+        "P03",
+        "P04",
+        "P08",
+        "P09",
+        "P10",
+        "P13"
+      ],
+      "disposition": "preserve_implemented_or_historical_scope_actual_optimizer_remains_separate",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0508",
+      "original_line": 508,
+      "track": "Track 5: LLM Reasoning Harness & Prompt Baselines (Baselines 2, 3, and Main Model)",
+      "snapshot_checked": true,
+      "original_text": "Test prompt payloads recursively: Baseline 2 contains no success/divergence; Baseline 3 contains success but no divergence; main contains both. No variant sees ground-truth metadata or identifies a cause from filenames/IDs. Verify null-divergence rejection, known fixture formatting, malformed model responses, and no mutation of storage objects.",
+      "text_sha256": "6ec16a9b9a7df47fef2518f8ec199f72c9e83e7b5993d002286ec96d4bbffa0f",
+      "work_packages": [
+        "P03",
+        "P04",
+        "P08",
+        "P09",
+        "P10",
+        "P13"
+      ],
+      "disposition": "preserve_implemented_or_historical_scope_actual_optimizer_remains_separate",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0509",
+      "original_line": 509,
+      "track": "Track 5: LLM Reasoning Harness & Prompt Baselines (Baselines 2, 3, and Main Model)",
+      "snapshot_checked": true,
+      "original_text": "**Nov. 6:** demonstrate real HF inference for both prompt baselines and retain reproducible manifests, exact raw text, and validated JSONL. The accepted derived run explicitly records its new response policy and the preserved original strict failure; no stub establishes HF acceptance. Record causal explanation defects separately from syntax, labels, and structured evidence.",
+      "text_sha256": "f7733ff92ddad252ea0b840a29457ea90679815bf3aff0510731772eccf0b0bf",
+      "work_packages": [
+        "P03",
+        "P04",
+        "P08",
+        "P09",
+        "P10",
+        "P13"
+      ],
+      "disposition": "preserve_implemented_or_historical_scope_actual_optimizer_remains_separate",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0510",
+      "original_line": 510,
+      "track": "Track 5: LLM Reasoning Harness & Prompt Baselines (Baselines 2, 3, and Main Model)",
+      "snapshot_checked": false,
+      "original_text": "**Nov. 13:** demonstrate real HF inference for the main paired-BT-plus-divergence variant and deliver comparable three-variant outputs. Describe causal evidence rather than attributing every later symptom to a separate injected fault.",
+      "text_sha256": "0678374996f90c758666884a7faf7db4d5a61a83bdd9c08c2a20a3e5cc7e730a",
+      "work_packages": [
+        "P00",
+        "P03",
+        "P05",
+        "P07"
+      ],
+      "disposition": "main_execution_exists_causal_quality_unreviewed",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0511",
+      "original_line": 511,
+      "track": "Track 5: LLM Reasoning Harness & Prompt Baselines (Baselines 2, 3, and Main Model)",
+      "snapshot_checked": true,
+      "original_text": "Implement the training formatter with nonempty/different chosen/rejected validation, matching variant/pair IDs, reviewed-preference provenance, evidence checks, and initial-condition split preservation. Identical inference messages feed DPO and chosen-only SFT exports. The verified 24-record CPU demonstration uses real production BTs but explicitly synthetic preferences; it cannot establish reviewed-data or optimizer acceptance. Formatter tests: 34 passed.",
+      "text_sha256": "ea6aa84e0ed770b820200591ff8376d84d9fbfa1f7c9d7e48e00581de8b27cc4",
+      "work_packages": [
+        "P03",
+        "P04",
+        "P08",
+        "P09",
+        "P10",
+        "P13"
+      ],
+      "disposition": "preserve_implemented_or_historical_scope_actual_optimizer_remains_separate",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0512",
+      "original_line": 512,
+      "track": "Track 5: LLM Reasoning Harness & Prompt Baselines (Baselines 2, 3, and Main Model)",
+      "snapshot_checked": true,
+      "original_text": "Prepare and test the reviewed-data-only CUDA LoRA/DPO launcher, strict runtime/configuration profile, optional CPU tokenizer check, no-truncation guards, and success/failure provenance. Actual CPU CLI check refuses the synthetic export without importing model runtimes or creating output. Training/formatter tests: 57 passed.",
+      "text_sha256": "b7bc5f41ac0e75f59fbf3e21d68a5a0e2d43709d6a7cc73e2583a9d149abedd6",
+      "work_packages": [
+        "P03",
+        "P04",
+        "P08",
+        "P09",
+        "P10",
+        "P13"
+      ],
+      "disposition": "preserve_implemented_or_historical_scope_actual_optimizer_remains_separate",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0513",
+      "original_line": 513,
+      "track": "Track 5: LLM Reasoning Harness & Prompt Baselines (Baselines 2, 3, and Main Model)",
+      "snapshot_checked": false,
+      "original_text": "Obtain reviewed train/dev preferences, execute GPU optimization and evaluate adapters. Synthetic preferences must remain ineligible; no held-out test data may enter training or validation.",
+      "text_sha256": "21172fc782b7b38ec79e0eb1e873c40437cc4bff656ed56264263bad47a9d9c6",
+      "work_packages": [
+        "P08",
+        "P09",
+        "P10",
+        "P11"
+      ],
+      "disposition": "reviewed_data_optimizer_adapter_evaluation_pending",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0552",
+      "original_line": 552,
+      "track": "Git workflow and integration checklist",
+      "snapshot_checked": true,
+      "original_text": "Assign owners for all five tracks (owner fields above are filled).",
+      "text_sha256": "9c07176c5fa008a41a9d1b0415363ee06fd5342c05c988b3948713cef2267d1e",
+      "work_packages": [
+        "P00",
+        "P06",
+        "P13"
+      ],
+      "disposition": "preserve_existing_acceptance_and_collaboration_requirements",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0570",
+      "original_line": 570,
+      "track": "Git workflow and integration checklist",
+      "snapshot_checked": true,
+      "original_text": "**CPU contract smoke:** generate a fresh mock into the requested output directory, validate its CSVs, build BTs, compute divergence, run Baseline 1 plus stubbed Baselines 2/3/main, validate predictions, score them, and render plots. Use explicit file lists so earlier runs/manifests cannot pollute evaluation. Assert the known grasp event (5.10 s, 12 N), all three view exclusions, one result per variant/pair, finite metric outputs, and nonempty plot artifacts. Verify that retained observations match newly generated CSVs and prompt hashes match the executed inference manifest; retain regression cases for rejected/corrupted artifacts and failure receipts.",
+      "text_sha256": "c3efac2b954ac860f628fae88d3b1303cfae241a0554db719614e477a0adf4b1",
+      "work_packages": [
+        "P00",
+        "P06",
+        "P13"
+      ],
+      "disposition": "preserve_existing_acceptance_and_collaboration_requirements",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0571",
+      "original_line": 571,
+      "track": "Git workflow and integration checklist",
+      "snapshot_checked": true,
+      "original_text": "**Real producer CPU smoke:** run 18 fresh accepted configurations across both tasks and four released modes, with 76 repeated executions, independent physical goals, strict telemetry replay, source/model fingerprints, and two excessive-speed activation probes. Thirteen cases have complete observed pre-injection equality; five have no prior stored sample and stay explicitly unavailable. Public parser/baseline/evaluator/plot stages verified 72 outputs and 31 PNGs. Exact-token context negatives are explicit: 44 stub abstentions and 10 refusals across 54 requests. Receipt: `runs/integration-mujoco-cpu-20261118/integration_manifest.json`, status `passed_with_context_refusals`; producer acceptance passed, model completion false.",
+      "text_sha256": "c6ba4bc869de20e2d8838f7877804f29151ee27c02571319c678bde207ae8eac",
+      "work_packages": [
+        "P00",
+        "P06",
+        "P13"
+      ],
+      "disposition": "preserve_existing_acceptance_and_collaboration_requirements",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0572",
+      "original_line": 572,
+      "track": "Git workflow and integration checklist",
+      "snapshot_checked": false,
+      "original_text": "**Real model smoke:** on a machine with model access/compute, run the three HF variants on the same parsed real pairs and the rule baseline on their failure-only views. Validate allowed inputs and JSONL outputs before evaluating. Keep real and stub results in separate run directories.",
+      "text_sha256": "b9d00b9da972c7f605c1e526dac8b92c58f70b9e394357bbab52ee1c46abf14a",
+      "work_packages": [
+        "P00"
+      ],
+      "disposition": "already_satisfied_by_independently_verified_real_v3_smoke",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0573",
+      "original_line": 573,
+      "track": "Git workflow and integration checklist",
+      "snapshot_checked": true,
+      "original_text": "**Stored full dataset gate:** validate 500 pairs/task, 50 conditions/task, and 125 pairs/mode/task across four represented modes; publish 1,000 enriched BTs with 700/100/200 grouped splits and verified checksums/configuration. All 101,357 fixed-reference event neighborhoods retained. Archived physical/provenance certification remains explicitly failed/pending; no held-out model results were generated.",
+      "text_sha256": "e2f53d2a59f9fdf71158f2f6d347362f351cd30b79ae9a8bf30d4d577348cb4c",
+      "work_packages": [
+        "P00",
+        "P06",
+        "P13"
+      ],
+      "disposition": "preserve_existing_acceptance_and_collaboration_requirements",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0574",
+      "original_line": 574,
+      "track": "Git workflow and integration checklist",
+      "snapshot_checked": true,
+      "original_text": "**CPU integration evidence:** retain stage logs and `integration_manifest.json` with status, known-event/view/evidence/metric/plot assertions, and artifact hashes from a fresh CPU run. The Nov. 18 receipt is at `runs/integration-cpu-20261118-foundation/integration_manifest.json` (ignored generated output).",
+      "text_sha256": "8464c6b389d65a355f62bd6f45130be42c56864bc7f45cfceea6853398bfdcab",
+      "work_packages": [
+        "P00",
+        "P06",
+        "P13"
+      ],
+      "disposition": "preserve_existing_acceptance_and_collaboration_requirements",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0575",
+      "original_line": 575,
+      "track": "Git workflow and integration checklist",
+      "snapshot_checked": false,
+      "original_text": "**Release integration evidence:** attach real dataset counts, production parser/compression diagnostics, real four-variant validation, plot examples, and remaining hardware-dependent checks to the integration PR. Never mark real-MuJoCo or HF checks passed because a stub test passed.",
+      "text_sha256": "e009eb9eff62a1545ccea3b9c8abe2902131dbfd3fefb7756793dd34e495e4bd",
+      "work_packages": [
+        "P13"
+      ],
+      "disposition": "actual_integration_evidence_attachment_and_review_pending",
+      "evidence_required_before_final_closure": true
+    },
+    {
+      "id": "todo-0576",
+      "original_line": 576,
+      "track": "Git workflow and integration checklist",
+      "snapshot_checked": true,
+      "original_text": "**CPU GPU-workflow rehearsal:** prepare immutable, exact-tokenized bundles and exercise all four variants using synthetic LLM responses. Current fresh physical smoke: eight pairs/24 fitting requests; complete fresh batch: 18 pairs/44 fitting requests and 10 context refusals. Optional archived dev: 100 pairs/261 fitting requests and 39 refusals. All requests remain accounted for. GPU `--inference-only` defers metrics, review sheets, and plots to the independently validating Mac evaluator. See [GPU commands and limits](docs/gpu-handoff.md) and [exact Ubuntu 24.04 setup/transfer commands](docs/alienware-ubuntu24.md).",
+      "text_sha256": "53ef8a2c8d4208fa9047e2f50658b6fbd7568dcb4eb9294cf2dbe232673dc009",
+      "work_packages": [
+        "P00",
+        "P06",
+        "P13"
+      ],
+      "disposition": "preserve_existing_acceptance_and_collaboration_requirements",
+      "evidence_required_before_final_closure": true
+    }
+  ],
+  "planned_files_not_yet_implemented": [
+    {
+      "path": "src/telemetry_reasoning/sim/calibration_candidates.py",
+      "exists_at_planning": false
+    },
+    {
+      "path": "configs/failure-candidates-v1.json",
+      "exists_at_planning": false
+    },
+    {
+      "path": "tests/test_calibration.py",
+      "exists_at_planning": false
+    },
+    {
+      "path": "src/telemetry_reasoning/models/decoding_diagnostics.py",
+      "exists_at_planning": false
+    },
+    {
+      "path": "scripts/diagnose_decoding.py",
+      "exists_at_planning": false
+    },
+    {
+      "path": "configs/llm-production-v4.yaml",
+      "exists_at_planning": false
+    },
+    {
+      "path": "src/telemetry_reasoning/models/prompt_serialization.py",
+      "exists_at_planning": false
+    },
+    {
+      "path": "scripts/audit_token_budgets.py",
+      "exists_at_planning": false
+    },
+    {
+      "path": "src/telemetry_reasoning/eval/review.py",
+      "exists_at_planning": false
+    },
+    {
+      "path": "scripts/review_explanations.py",
+      "exists_at_planning": false
+    },
+    {
+      "path": "tests/test_human_review.py",
+      "exists_at_planning": false
+    },
+    {
+      "path": "src/telemetry_reasoning/models/preference_review.py",
+      "exists_at_planning": false
+    },
+    {
+      "path": "scripts/prepare_preference_review.py",
+      "exists_at_planning": false
+    },
+    {
+      "path": "src/telemetry_reasoning/models/training_qualification.py",
+      "exists_at_planning": false
+    },
+    {
+      "path": "scripts/qualify_training.py",
+      "exists_at_planning": false
+    }
+  ],
+  "external_dependencies": [
+    {
+      "id": "authentic_original_producer_records",
+      "required_for": [
+        "P02"
+      ],
+      "cannot_be_substituted_with": "current source hashes, an inferred historical environment, or a release tag"
+    },
+    {
+      "id": "dataset_scope_decision_if_unrecoverable",
+      "required_for": [
+        "P02"
+      ],
+      "condition": "Only if authentic original records cannot be recovered; new data cannot certify original v1"
+    },
+    {
+      "id": "genuine_explanation_review",
+      "required_for": [
+        "P05",
+        "P07",
+        "P11",
+        "P12"
+      ],
+      "cannot_be_substituted_with": "an empty rubric or agent-invented reviewer scores"
+    },
+    {
+      "id": "genuine_preference_annotations",
+      "required_for": [
+        "P08",
+        "P11"
+      ],
+      "cannot_be_substituted_with": "synthetic demonstration records or invented reviewer provenance"
+    },
+    {
+      "id": "actual_gpu_execution",
+      "required_for": [
+        "P03",
+        "P07",
+        "P09",
+        "P10",
+        "P11",
+        "P12"
+      ],
+      "cannot_be_substituted_with": "fake backend or CPU-only tests"
+    },
+    {
+      "id": "actual_peer_integration_review",
+      "required_for": [
+        "P13"
+      ],
+      "cannot_be_substituted_with": "a prepared PR description or self-declared peer approval"
+    }
+  ],
+  "dependency_semantics": "CPU implementation/tooling may proceed before later human/GPU acceptance. Follow each package parallelism note and the document gates; do not wait for downstream results to build their upstream review tools.",
+  "plan_document_sha256": "b0452501d31825e928ce7acf3558673d31160a5c4a4d5402a941a3b31e31429a"
+}

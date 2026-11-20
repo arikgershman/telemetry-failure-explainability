@@ -16,8 +16,9 @@ Nothing here is silently dropped. Lines that cannot be parsed are returned as
 they still occupy that key (and are scored as invalid), otherwise they are
 reported as unattributable.
 
-The label constants below mirror ``telemetry_reasoning.schemas`` (``FailureMode``,
-``Subtask``, ``Task``, ``TelemetryFeature``).
+Task, subtask, and failure-mode vocabularies come from the canonical schemas.
+Dataset class support is a property of an evaluation slice, never a restriction
+on the shared prediction contract.
 """
 
 from __future__ import annotations
@@ -30,21 +31,19 @@ from typing import Annotated, Any, Iterable, Mapping, Optional, Sequence, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from telemetry_reasoning.schemas import FailureMode, Subtask, Task
+from telemetry_reasoning.schemas import TASK_SUBTASKS as SCHEMA_TASK_SUBTASKS
+
 # --------------------------------------------------------------------------- #
-# Label vocabularies (mirror schemas.py; cross-checked in tests)
+# Canonical label vocabularies, preserving schema order for stable reports.
 # --------------------------------------------------------------------------- #
-TASKS: tuple[str, ...] = ("pick_up_object", "transport_object")
+TASKS: tuple[str, ...] = tuple(task.value for task in Task)
 TASK_SUBTASKS: Mapping[str, tuple[str, ...]] = {
-    "pick_up_object": ("approach", "align", "grasp", "lift"),
-    "transport_object": ("maintain_grasp", "move_along_path", "reach_target"),
+    task.value: tuple(subtask.value for subtask in subtasks)
+    for task, subtasks in SCHEMA_TASK_SUBTASKS.items()
 }
-SUBTASKS: tuple[str, ...] = tuple(s for subs in TASK_SUBTASKS.values() for s in subs)
-FAILURE_MODES: tuple[str, ...] = (
-    "position_error",
-    "orientation_error",
-    "inadequate_grip_strength",
-    "early_gripper_release",
-)
+SUBTASKS: tuple[str, ...] = tuple(subtask.value for subtask in Subtask)
+FAILURE_MODES: tuple[str, ...] = tuple(mode.value for mode in FailureMode)
 MODEL_VARIANTS: tuple[str, ...] = ("baseline_1", "baseline_2", "baseline_3", "main")
 STATUSES: tuple[str, ...] = ("ok", "abstain", "error")
 BACKENDS: tuple[str, ...] = ("rules", "hf", "stub")

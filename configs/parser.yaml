@@ -1,7 +1,9 @@
 # Track 3 Nov. 6 parser configuration: complete shared ProjectConfig.
-# Provisional values preserve sample reproducibility. Real telemetry tuning is
-# pending Track 2's validated train/dev manifest; these are NOT calibrated.
-# Sweep independently with scripts/tune_compression.py, then review its report.
+# These values preserve sample reproducibility. Track 2's Nov. 17 handoff
+# records grouped dev sweeps recommending k=5 and threshold_scale=1 for both
+# tasks. Confirm archived inputs/results and record production selection before
+# treating this configuration as the final release choice. No automatic tuning
+# changes are applied; scripts/tune_compression.py writes a separate report.
 simulation:
   sim_hz: 500
   sim_dt_s: 0.002

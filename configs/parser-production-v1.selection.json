@@ -1,0 +1,63 @@
+{
+  "dataset_manifest_sha256": "9f2dc69dfed847f4cfe9b896190658367d43528c06a117ec667f97a1e3b81d8d",
+  "dataset_tag": "dataset-v1",
+  "grid": {
+    "k_uniform_samples": [
+      0,
+      2,
+      5
+    ],
+    "threshold_scales": [
+      0.5,
+      1.0,
+      2.0
+    ]
+  },
+  "limitations": [
+    "Compression choice applies to stored parser-ready traces; archival replay certification remains failed.",
+    "Reconstruction constraints are relative to the base configuration, not a physical-accuracy bound.",
+    "Divergence thresholds are fixed provisional numerical thresholds; not calibrated to physical fault onset."
+  ],
+  "production_config_file": "configs/parser-production-v1.yaml",
+  "production_config_sha256": "c74c4502fa66b69ce4fd5d922f62859e7c35cffaac7041863fe8a840806b8344",
+  "selection_policy": {
+    "constraints": [
+      "all fixed-reference event neighborhoods retained on every selected pair",
+      "all per-feature per-pair maximum reconstruction errors no greater than base"
+    ],
+    "objective": "minimum summed paired_without_divergence payload UTF-8 bytes",
+    "reconstruction_comparison_absolute_tolerance": 1e-12,
+    "tie_break": [
+      "smaller k_uniform_samples",
+      "smaller threshold_scale"
+    ]
+  },
+  "selection_version": 1,
+  "source_config_file": "configs/parser.yaml",
+  "source_config_sha256": "dbd55b5060815886bd44d9b38bb3b8fd6e9e5b491531daf7616c2fe6b88ac443",
+  "tasks": {
+    "pick_up_object": {
+      "candidate_id": "k=5;threshold_scale=1",
+      "config_sha256": "eecce4bc8eeda4f70ad38c378f996d1742a2329f28d6101060d6745fad346f07",
+      "eligible_candidates": [
+        "k=5;threshold_scale=1"
+      ],
+      "paired_payload_utf8_bytes": 7305421,
+      "report_sha256": "b988ce16421ae3e71cfd4d56bdefb00fc14f685799403cd841c10ca4f9876365",
+      "selected_pairs": 50,
+      "split": "dev"
+    },
+    "transport_object": {
+      "candidate_id": "k=5;threshold_scale=1",
+      "config_sha256": "eecce4bc8eeda4f70ad38c378f996d1742a2329f28d6101060d6745fad346f07",
+      "eligible_candidates": [
+        "k=5;threshold_scale=1"
+      ],
+      "paired_payload_utf8_bytes": 8187322,
+      "report_sha256": "09e09fa3546a6728604a3d7cc1b7fc59c5e81f485cd82df3cf80511a4aaa977b",
+      "selected_pairs": 50,
+      "split": "dev"
+    }
+  },
+  "test_data_used_for_selection": false
+}

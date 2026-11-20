@@ -16,7 +16,7 @@ class FailureConfig:
     def __post_init__(self):
         if not np.isfinite(self.magnitude) or self.magnitude <= 0:
             raise ValueError('magnitude must be finite and positive')
-        if self.delay_s < 0 or self.axis not in (0, 1, 2):
+        if not np.isfinite(self.delay_s) or self.delay_s < 0 or self.axis not in (0, 1, 2):
             raise ValueError('invalid delay or axis')
 
 
@@ -29,6 +29,8 @@ class FailureEngine:
         self.activated = False
         self.first_activation_s = None
         self.activation_steps = 0
+        self.activation_context_calls = 0
+        self._active_timestamps = set()
         self._active = False
 
     def set_context(self, stage: str | None, time_s: float):
@@ -42,7 +44,13 @@ class FailureEngine:
         )
         if self._active:
             self.activated = True
-            self.activation_steps += 1
+            # The runner sets context before controller updates and again before
+            # actuator overrides. Count an active simulator timestamp once even
+            # when both command paths use it or the stage changes off/on at that
+            # timestamp. Preserve the old context-call measure separately.
+            self.activation_context_calls += 1
+            self._active_timestamps.add(float(time_s))
+            self.activation_steps = len(self._active_timestamps)
             if self.first_activation_s is None:
                 self.first_activation_s = float(time_s)
 
@@ -83,6 +91,8 @@ class FailureEngine:
             'activated': self.activated,
             'first_activation_s': self.first_activation_s,
             'activation_steps': self.activation_steps,
+            'activation_steps_basis': 'unique_active_simulator_timestamps',
+            'activation_context_calls': self.activation_context_calls,
         }
 
 

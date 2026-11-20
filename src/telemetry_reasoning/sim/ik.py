@@ -16,13 +16,20 @@ class IKSolver:
         self.max_speed = max_speed
         self.target_q = None
         self.failure_engine = None
+        # Detached nominal Cartesian command for the runner's optional hook.
+        # Merely recording this does not change the historical no-hook path.
+        self.last_command = None
 
     def pose(self, data):
         rot = data.xmat[self.hand_id].reshape(3, 3).copy()
         return data.xpos[self.hand_id].copy() + rot @ self.offset, rot
 
-    def move(self, data, target_pos, target_rot, dt):
-        speed = self.max_speed
+    def move(self, data, target_pos, target_rot, dt, *, speed_scale=1.0):
+        self.last_command = (np.asarray(target_pos, dtype=float).copy(),
+                             np.asarray(target_rot, dtype=float).copy())
+        if not np.isfinite(speed_scale) or speed_scale <= 0:
+            raise ValueError('speed_scale must be finite and positive')
+        speed = self.max_speed * speed_scale
         if self.failure_engine is not None:
             target_pos, target_rot, speed = self.failure_engine.transform_target(
                 target_pos, target_rot, speed

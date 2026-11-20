@@ -37,10 +37,11 @@ from pathlib import Path
 from typing import Any, Iterable, Literal, Mapping, Optional, Sequence, Union
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from telemetry_reasoning.eval.contracts import (
     FAILURE_MODES,
+    MODEL_VARIANTS,
     TASK_SUBTASKS,
     TASKS,
     ContractError,
@@ -97,10 +98,27 @@ class EvalConfig(BaseModel):
     rubric: RubricConfig = RubricConfig()
     plots: PlotConfig = PlotConfig()
 
+    @field_validator("expected_variants")
+    @classmethod
+    def _known_variants(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        _validate_variants(value)
+        return value
+
+
+def _validate_variants(variants: Sequence[str]) -> None:
+    unknown = sorted(set(variants) - set(MODEL_VARIANTS))
+    if unknown:
+        raise ContractError(f"unknown model variant(s): {', '.join(unknown)}")
+    if len(set(variants)) != len(variants):
+        raise ContractError("duplicate model variants")
+
 
 def load_eval_config(path: Union[str, Path, None] = None) -> EvalConfig:
     source = Path(path) if path is not None else DEFAULT_EVAL_CONFIG_PATH
-    raw = yaml.safe_load(source.read_text())
+    try:
+        raw = yaml.safe_load(source.read_text())
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{source}: invalid YAML: {exc}") from exc
     if not isinstance(raw, Mapping):
         raise ValueError(f"{source}: expected a mapping with an 'eval' section")
     extra = set(raw) - {"eval"}
@@ -235,6 +253,7 @@ def _slice_metrics(pairs: Sequence[tuple[TruthRecord, Outcome]]) -> dict[str, An
         fp, fn = predicted - tp, support - tp
         per_class[label] = {
             "support": support,
+            "included_in_macro_f1": support > 0,
             "predicted": predicted,
             "tp": tp,
             "precision": _rate(tp, predicted),
@@ -270,6 +289,7 @@ def _slice_metrics(pairs: Sequence[tuple[TruthRecord, Outcome]]) -> dict[str, An
         "failed_subtask_accuracy": _rate(sub_ok, n),
         "joint_accuracy": _rate(both_ok, n),
         "macro_f1": macro,
+        "macro_f1_labels": present,
         "macro_f1_fixed_labels": macro_fixed,
         "labels_absent": [lab for lab in FAILURE_MODES if per_class[lab]["support"] == 0],
         "per_class": per_class,
@@ -435,6 +455,7 @@ def evaluate(
     """Score every variant against ``truth``. All truth pairs are scored for every variant."""
     in_scope = {t.pair_id for t in truth}
     chosen = list(variants) if variants else sorted(set(cfg.expected_variants) | set(indexed.variants))
+    _validate_variants(chosen)
     tasks_present = [task for task in TASKS if any(t.task == task for t in truth)]
 
     result: dict[str, Any] = {
@@ -556,6 +577,11 @@ def format_summary(result: Mapping[str, Any]) -> str:
                 f"  {name:<18}{sl['n']:>5}{_pct(sl['failure_mode_accuracy']):>10}{_pct(sl['macro_f1']):>9}"
                 f"{_pct(sl['failed_subtask_accuracy']):>9}{_pct(sl['coverage']):>10}{_pct(sl['abstain_rate']):>9}"
             )
+            if sl["labels_absent"]:
+                lines.append(
+                    f"    {name}: zero-support labels (excluded from macroF1): "
+                    + ", ".join(sl["labels_absent"])
+                )
         ev = entry["evidence"]
         if ev.get("checked"):
             lines.append(

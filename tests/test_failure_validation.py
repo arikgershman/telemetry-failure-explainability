@@ -112,6 +112,30 @@ def test_early_release_opens_gripper():
     assert engine.diagnostics()["activated"] is True
 
 
+def test_active_steps_count_each_simulator_timestamp_once():
+    engine = FailureEngine(FailureConfig(mode=FailureMode.EARLY_GRIPPER_RELEASE,
+                                         subtask=Subtask.GRASP, magnitude=1.0))
+    engine.set_context("grasp", 1.0)  # Before controller update.
+    engine.set_context("grasp", 1.0)  # Before actuator override, same step.
+    assert engine.diagnostics()["activation_steps"] == 1
+    assert engine.diagnostics()["activation_context_calls"] == 2
+    engine.set_context("grasp", 1.002)
+    assert engine.diagnostics()["activation_steps"] == 2
+    engine.set_context("lift", 1.002)
+    engine.set_context("grasp", 1.002)
+    assert engine.diagnostics()["activation_steps"] == 2
+    assert engine.diagnostics()["activation_context_calls"] == 4
+    assert engine.diagnostics()["first_activation_s"] == 1.0
+    assert engine.diagnostics()["activation_steps_basis"] == "unique_active_simulator_timestamps"
+
+
+@pytest.mark.parametrize("delay", [-1.0, float("nan"), float("inf"), -float("inf")])
+def test_failure_delay_must_be_finite_and_nonnegative(delay):
+    with pytest.raises(ValueError, match="delay"):
+        FailureConfig(mode=FailureMode.POSITION_ERROR, subtask=Subtask.APPROACH,
+                      magnitude=0.05, delay_s=delay)
+
+
 @pytest.mark.parametrize('mode', list(FailureMode))
 def test_failure_isolation_and_boundaries(mode):
     """All five mechanisms leave inputs untouched outside their target window."""

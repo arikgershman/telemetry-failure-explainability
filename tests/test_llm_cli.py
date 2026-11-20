@@ -167,7 +167,7 @@ def test_source_and_all_prompt_template_files_have_exact_hashes(tmp_path):
     assert run_llm.main(arguments(output, "--variants", "baseline_2")) == 0
     manifest = read_manifest(output)
     assert {Path(item["path"]).name for item in manifest["source_files"]} == {
-        "run_llm.py", "llm.py", "prompts.py", "schemas.py", "contracts.py",
+        "run_llm.py", "llm.py", "prompts.py", "schemas.py", "contracts.py", "constrained.py",
     }
     assert {item["model_variant"] for item in manifest["prompt_template_files"]} == {
         "baseline_2", "baseline_3", "main",

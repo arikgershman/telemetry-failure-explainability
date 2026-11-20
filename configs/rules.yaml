@@ -28,6 +28,20 @@ rules:
   orientation_stages: [align]
   max_orientation_rad: 0.2
 
+  # excessive_speed (both tasks): observed EE displacement / actual elapsed
+  # time between retained samples, in m/s. This is a configured motion limit,
+  # not a recovered command, joint-speed multiplier, or proof of failure cause.
+  # A lower bound on average path speed remains meaningful after compression;
+  # brief peaks between retained samples cannot be recovered. Like the other
+  # defaults, 0.5 m/s is an initial threshold requiring producer calibration.
+  max_ee_speed_m_s: 0.5
+  speed_persist_s: 0.5
+  speed_min_intervals: 2  # >=3 retained positions; ignore one-interval spikes
+  # Adjacent displacement vectors must not reverse; a one-sample position
+  # outlier and its return therefore cannot establish persistent fast motion.
+  # Runs cannot bridge stage boundaries or empty/unobserved stages.
+  speed_stages: [approach, align, grasp, lift, maintain_grasp, move_along_path, reach_target]
+
   # Downstream evidence only (never a predicted mode): the object failing to
   # follow the end effector.
   follow_stages: [lift, maintain_grasp, move_along_path]

@@ -1,0 +1,21 @@
+# Dedicated, opt-in CUDA BF16 LoRA/DPO profile. --check is CPU-only and default.
+# Requires reviewed train AND dev annotations for one explicit model variant.
+# 8,192 is a launch budget, not permission to truncate larger real BT prompts.
+# Increase only with sufficient memory; runtime checks every exact token sequence.
+training:
+  method: dpo
+  model_id: meta-llama/Llama-3.1-8B-Instruct
+  revision: 0e9e39f249a16976918f6564b8830bc894c89659
+  device: cuda
+  dtype: bfloat16
+  local_files_only: true
+  max_length: 8192
+  learning_rate: 0.000005
+  beta: 0.1
+  epochs: 1.0
+  gradient_accumulation_steps: 8
+  seed: 723
+  lora_rank: 16
+  lora_alpha: 32
+  lora_dropout: 0.0
+  target_modules: [q_proj, k_proj, v_proj, o_proj]

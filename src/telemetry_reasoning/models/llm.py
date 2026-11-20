@@ -9,6 +9,7 @@ settings, which are recorded with raw completions for reproducibility.
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -21,6 +22,7 @@ from pathlib import Path
 import platform
 import re
 import time
+import traceback
 from typing import Annotated, Any, Literal, Protocol, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -177,6 +179,10 @@ class LLMConfig(BaseModel):
     batch_size: Annotated[int, Field(strict=True, gt=0, le=128)] = 1
     seed: Annotated[int, Field(strict=True, ge=0, lt=2**32)] = 723
     response_policy: ResponsePolicy = "strict_json_v1"
+    decoding_constraint: Literal["none", "observed_json_v1"] = "none"
+    prefill_chunk_size: Annotated[int, Field(strict=True, gt=0, le=2048)] | None = None
+    attention_implementation: Literal["auto", "sdpa"] = "auto"
+    fused_attention_only: Annotated[bool, Field(strict=True)] = False
     local_files_only: Annotated[bool, Field(strict=True)] = True
     quantization: Literal["none", "metal4"] = "none"
     quantization_group_size: Literal[64] = 64
@@ -188,12 +194,30 @@ class LLMConfig(BaseModel):
     def valid_budget(self) -> "LLMConfig":
         if self.max_new_tokens >= self.context_window_tokens:
             raise ValueError("max_new_tokens must leave room for the input prompt")
+        if self.decoding_constraint != "none" and self.batch_size != 1:
+            raise ValueError("observed_json_v1 requires batch_size=1")
+        if self.fused_attention_only and (self.device != "cuda" or self.attention_implementation != "sdpa"):
+            raise ValueError("fused_attention_only requires device=cuda and attention_implementation=sdpa")
+        if self.prefill_chunk_size is not None:
+            if self.attention_implementation != "sdpa" or self.device == "mps":
+                raise ValueError("chunked prefill requires CPU/CUDA SDPA")
+            if self.device == "cuda" and not self.fused_attention_only:
+                raise ValueError("CUDA chunked prefill requires fused_attention_only; math fallback is unsafe")
         if self.quantization == "metal4":
             if self.device != "mps" or self.dtype != "float16":
                 raise ValueError("metal4 requires device=mps and dtype=float16; no fallback is supported")
             if self.local_files_only:
                 raise ValueError("metal4 requires local_files_only=false because its kernel loader may access the Hub")
         return self
+
+
+def execution_policy(config: LLMConfig) -> dict[str, Any]:
+    return {"prefill_chunk_size": config.prefill_chunk_size,
+            "cache_implementation": "dynamic" if config.prefill_chunk_size is not None else "checkpoint_default",
+            "disable_compile": config.prefill_chunk_size is not None,
+            "attention_implementation": config.attention_implementation,
+            "fused_attention_only": config.fused_attention_only,
+            "decoding_constraint": config.decoding_constraint}
 
 
 def load_llm_config(path: str | Path = DEFAULT_CONFIG_PATH) -> LLMConfig:
@@ -319,6 +343,9 @@ class HFBackend:
         self._torch = self._transformers = self._tokenizer = self._model = None
         self._kernel_diagnostics: dict[str, Any] | None = None
         self._resource_diagnostics: dict[str, Any] | None = None
+        self._cuda_cache_releases: list[dict[str, Any]] = []
+        self._constraint_diagnostics: list[dict[str, Any]] = []
+        self._request_memory: list[dict[str, Any]] = []
 
     def _preflight_host(self, *, kv_cache_bytes: int | None = None) -> None:
         resident = self._model is not None
@@ -328,6 +355,9 @@ class HFBackend:
         self._resource_diagnostics = _host_resource_assessment(
             self.config, _host_resources(), resident=resident, required_available_bytes=available_floor,
         )
+        if self._cuda_cache_releases:
+            self._resource_diagnostics["cuda_cache_releases"] = self._cuda_cache_releases
+            self._resource_diagnostics["cuda_cache_release"] = self._cuda_cache_releases[-1]
         if kv_cache_bytes is not None:
             self._resource_diagnostics["kv_cache_estimate_bytes"] = kv_cache_bytes
         if not self._resource_diagnostics["host_admissible"]:
@@ -349,6 +379,28 @@ class HFBackend:
                 raise ResourceSafetyError("CUDA memory could not be verified before loading") from exc
             required = ((4 * GIB + (kv_cache_bytes or 0)) if self._model is not None
                         else (40 if self.config.dtype == "float32" else 24) * GIB)
+            # Driver-free memory excludes PyTorch's inactive cached blocks.
+            # A previous long request may leave little driver-free memory even
+            # though its workspace/KV tensors have been released. Reclaim only
+            # unused cache before refusing a resident request, then apply the
+            # same guard to fresh measurements; never infer reusable capacity
+            # from reserved-minus-allocated bytes or lower the safety floor.
+            release_cache = getattr(torch.cuda, "empty_cache", None)
+            if (self._model is not None and type(free) is int and type(total) is int
+                    and min(free, total) < required and callable(release_cache)):
+                recovery = {"attempted": True, "reason": "resident_guard_insufficient_driver_free_memory",
+                            "minimum_cuda_memory_bytes": required,
+                            "free_before_bytes": free, "free_after_bytes": None}
+                self._cuda_cache_releases.append(recovery)
+                self._resource_diagnostics["cuda_cache_release"] = recovery
+                self._resource_diagnostics["cuda_cache_releases"] = self._cuda_cache_releases
+                try:
+                    release_cache()
+                    free, total = torch.cuda.mem_get_info()
+                except Exception as exc:
+                    recovery["error_type"] = type(exc).__name__
+                    raise ResourceSafetyError("CUDA memory could not be verified after releasing unused cache") from exc
+                recovery["free_after_bytes"] = free
             self._resource_diagnostics.update(cuda_free_memory_bytes=free, cuda_total_memory_bytes=total,
                                               minimum_cuda_memory_bytes=required)
             if type(free) is not int or type(total) is not int or min(free, total) < required:
@@ -500,6 +552,8 @@ class HFBackend:
         if self._model is None:
             kwargs = self._load_arguments()
             kwargs["torch_dtype"] = getattr(self._torch, self.config.dtype)
+            if self.config.attention_implementation != "auto":
+                kwargs["attn_implementation"] = self.config.attention_implementation
             if self.config.quantization == "metal4":
                 kwargs.update(quantization_config=self._prepare_metal(), device_map="mps")
             model = self._transformers.AutoModelForCausalLM.from_pretrained(self.config.model_id, **kwargs)
@@ -517,6 +571,9 @@ class HFBackend:
                 devices = getattr(model, "hf_device_map", {})
                 if any(not str(device).startswith("mps") for device in devices.values()):
                     raise ValueError("Metal quantized weights must remain on MPS without offloading")
+            if (self.config.attention_implementation != "auto" and
+                    getattr(model.config, "_attn_implementation", None) != self.config.attention_implementation):
+                raise RuntimeError("loaded model attention differs from the requested implementation")
             self._model = model
         native_limit = getattr(self._model.config, "max_position_embeddings", None)
         if native_limit and self.config.context_window_tokens > native_limit:
@@ -537,6 +594,14 @@ class HFBackend:
         encoded, counts = self._encode(prompts)
         if any(count + self.config.max_new_tokens > self.config.context_window_tokens for count in counts):
             raise ValueError("prompt plus reserved output exceeds context budget; no truncation performed")
+        constraints = []
+        if self.config.decoding_constraint == "observed_json_v1":
+            from telemetry_reasoning.models.constrained import ObservedResponseConstraint
+            constraints = [ObservedResponseConstraint(prompt, self._tokenizer, self._tokenizer.eos_token_id,
+                                                      self.config.max_new_tokens) for prompt in prompts]
+        if self.config.prefill_chunk_size is not None and not hasattr(
+                self._transformers.GenerationConfig(), "prefill_chunk_size"):
+            raise RuntimeError("installed Transformers does not support native chunked prefill")
         self._load_model()
         # Pinned Llama-3.1-8B KV shape: K/V x32 layers x8 KV heads x128
         # channels, at the configured dtype, across the padded batch. Reserve
@@ -552,12 +617,49 @@ class HFBackend:
         eos_ids = getattr(self._model.generation_config, "eos_token_id", None)
         if eos_ids is None:
             eos_ids = self._tokenizer.eos_token_id
-        generation_config = self._transformers.GenerationConfig(
+        generation_options = dict(
             do_sample=False, num_beams=1, max_new_tokens=self.config.max_new_tokens,
             eos_token_id=eos_ids, pad_token_id=self._tokenizer.pad_token_id,
         )
-        with self._torch.inference_mode():
-            generated = self._model.generate(**inputs, generation_config=generation_config)
+        if self.config.prefill_chunk_size is not None:
+            generation_options.update(prefill_chunk_size=self.config.prefill_chunk_size,
+                                      cache_implementation="dynamic", disable_compile=True, use_cache=True)
+        generation_config = self._transformers.GenerationConfig(**generation_options)
+        callbacks = {}
+        if constraints:
+            declared_eos = set(eos_ids if isinstance(eos_ids, (tuple, list)) else [eos_ids])
+            if not set(constraints[0].eos_ids) <= declared_eos:
+                raise ValueError("constraint EOS is not an actual model generation terminator")
+            def allowed(batch_id, sequence):
+                return constraints[batch_id].allowed_tokens(sequence[width:].tolist())
+            callbacks["prefix_allowed_tokens_fn"] = allowed
+            self._constraint_diagnostics.extend({"prompt_sha256": prompt.prompt_sha256, **constraint.provenance()}
+                                                for prompt, constraint in zip(prompts, constraints))
+        attention_context = nullcontext()
+        if self.config.fused_attention_only:
+            attention = importlib.import_module("torch.nn.attention")
+            attention_context = attention.sdpa_kernel([attention.SDPBackend.FLASH_ATTENTION,
+                attention.SDPBackend.EFFICIENT_ATTENTION, attention.SDPBackend.CUDNN_ATTENTION])
+        memory = None
+        if self.config.device == "cuda" and self.config.prefill_chunk_size is not None:
+            self._torch.cuda.reset_peak_memory_stats()
+            memory = {"prompt_sha256": [prompt.prompt_sha256 for prompt in prompts],
+                      "input_tokens": counts, "prefill_chunk_size": self.config.prefill_chunk_size,
+                      "kv_cache_estimate_bytes": kv_cache_bytes, "completed": False}
+        try:
+            with self._torch.inference_mode(), attention_context:
+                generated = self._model.generate(**inputs, generation_config=generation_config, **callbacks)
+            if memory is not None:
+                self._torch.cuda.synchronize()
+                memory["completed"] = True
+        finally:
+            if memory is not None:
+                try:
+                    memory.update(peak_allocated_bytes=self._torch.cuda.max_memory_allocated(),
+                                  peak_reserved_bytes=self._torch.cuda.max_memory_reserved())
+                except Exception as exc:
+                    memory["measurement_error"] = type(exc).__name__
+                self._request_memory.append(memory)
         if len(generated.shape) != 2 or generated.shape[0] != len(prompts) or generated.shape[1] < width:
             raise ValueError("model returned inconsistent generated batch dimensions")
         eos = set(eos_ids if isinstance(eos_ids, (list, tuple)) else [eos_ids]) - {None}
@@ -571,8 +673,15 @@ class HFBackend:
                 token_ids = token_ids[:stop]
             if len(token_ids) > self.config.max_new_tokens:
                 raise ValueError("model returned more than max_new_tokens")
+            if constraints:
+                if not token_ids or token_ids[-1] not in constraints[index].eos_ids:
+                    raise ValueError("constrained generation did not finish with its declared EOS")
+                # Validate the actual emitted history as well as installing the
+                # callback. An engine that bypasses it must fail explicitly.
+                constraints[index].allowed_tokens(token_ids)
             results.append(Generation(
-                self._tokenizer.decode(token_ids, skip_special_tokens=True), count,
+                self._tokenizer.decode(token_ids, skip_special_tokens=True,
+                                       **({"clean_up_tokenization_spaces": False} if constraints else {})), count,
                 len(token_ids), self.token_count_method,
                 "eos" if stop is not None else "length" if len(token_ids) == self.config.max_new_tokens else "unknown",
             ))
@@ -584,7 +693,11 @@ class HFBackend:
         quantizer = getattr(self._model, "hf_quantizer", None)
         quant_config = getattr(quantizer, "quantization_config", None)
         return {
-            "implementation": "transformers_batched_greedy_v2",
+            "implementation": ("transformers_batched_greedy_v3" if self.config.prefill_chunk_size is not None
+                               or self.config.decoding_constraint != "none" else "transformers_batched_greedy_v2"),
+            "execution_policy": execution_policy(self.config),
+            "constraints": self._constraint_diagnostics,
+            "request_memory": self._request_memory,
             "weights_loaded": self._model is not None, "tokenizer_loaded": tokenizer is not None,
             "token_count_method": self.token_count_method,
             "device": self.config.device, "dtype": self.config.dtype,
@@ -723,6 +836,81 @@ class InferenceRun:
     completions: tuple[dict[str, Any], ...] = ()
 
 
+@dataclass(frozen=True)
+class _InferenceFailure:
+    """CPU-only diagnostics; an exception object can retain device tensors."""
+
+    error_type: str
+    error_message: str
+    causes: tuple[tuple[str, str, str], ...] = ()
+    causes_truncated: bool = False
+
+
+def _failure_message(error: BaseException) -> str:
+    try:
+        return str(error)[:1000]
+    except Exception as formatting_error:
+        return f"<{type(error).__name__}: message unavailable ({type(formatting_error).__name__})>"[:1000]
+
+
+def _capture_inference_failure(error: Exception) -> _InferenceFailure:
+    """Retain bounded text before dropping frame references outside ``except``."""
+    causes = []
+    current, seen = error, {id(error)}
+    while len(causes) < 8:
+        cause = current.__cause__
+        relation = "cause"
+        if cause is None and not current.__suppress_context__:
+            cause, relation = current.__context__, "context"
+        if cause is None:
+            return _InferenceFailure(type(error).__name__, _failure_message(error), tuple(causes))
+        if id(cause) in seen:
+            break
+        seen.add(id(cause))
+        causes.append((relation, type(cause).__name__, _failure_message(cause)))
+        current = cause
+    remaining = current.__cause__
+    if remaining is None and not current.__suppress_context__:
+        remaining = current.__context__
+    return _InferenceFailure(type(error).__name__, _failure_message(error), tuple(causes), remaining is not None)
+
+
+def _release_failure_frames(error: Exception) -> None:
+    """Clear finished traceback frames only after the handling block has exited.
+
+    Failed model calls can leave their KV cache and temporary tensors in frame
+    locals. Preserve their text diagnostics, then remove those references before
+    admitting another batch. Live harness frames are left intact by clear_frames.
+    No generation is retried and this does not release resident model weights.
+    """
+    pending, seen = [error], set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        for linked in (current.__cause__, current.__context__):
+            if linked is not None:
+                pending.append(linked)
+        frames = current.__traceback__
+        current.__traceback__ = None
+        if frames is not None:
+            traceback.clear_frames(frames)
+
+
+def _capture_and_release_failure(error: Exception) -> _InferenceFailure:
+    captured = _capture_inference_failure(error)
+    _release_failure_frames(error)
+    return captured
+
+
+def _detach_batch_failures(results: tuple[Any, ...]) -> tuple[Any, ...]:
+    # This function runs after generation's exception handler has exited. Its
+    # output never keeps exception objects, even for per-row backend failures.
+    return tuple(_capture_and_release_failure(result) if isinstance(result, Exception) else result
+                 for result in results)
+
+
 def run_inference(
     trees: Sequence[PairedBehaviorTree], variants: Sequence[str], config: LLMConfig, *,
     backend: InferenceBackend | None = None, template_dir: str | Path | None = None,
@@ -773,13 +961,20 @@ def run_inference(
     completions: dict[int, dict[str, Any]] = {}
     pending = []
 
-    def fail(index: int, exc: Exception) -> None:
+    def fail(index: int, error: _InferenceFailure) -> None:
         request = manifest["requests"][index]
-        request.update(error_type=type(exc).__name__, error_message=str(exc)[:1000])
+        request.update(error_type=error.error_type, error_message=error.error_message)
+        if error.causes:
+            request["error_causes"] = [
+                {"relation": relation, "error_type": error_type, "error_message": message}
+                for relation, error_type, message in error.causes
+            ]
+        if error.causes_truncated:
+            request["error_causes_truncated"] = True
         predictions[index] = {
             "pair_id": request["pair_id"], "model_variant": request["model_variant"],
             "predicted_failure_mode": None, "predicted_subtask": None,
-            "explanation": f"Inference rejected ({type(exc).__name__}): {str(exc)[:240]}",
+            "explanation": f"Inference rejected ({error.error_type}): {error.error_message[:240]}",
             "evidence": [], "status": "error", "backend": backend.name,
         }
 
@@ -788,7 +983,7 @@ def run_inference(
         request.update(status=predictions[index]["status"], latency_s=time.perf_counter() - request_start)
         if index in completions:
             completions[index].update(status=request["status"])
-            for key in ("error_type", "error_message"):
+            for key in ("error_type", "error_message", "error_causes", "error_causes_truncated"):
                 if key in request:
                     completions[index][key] = request[key]
 
@@ -803,6 +998,7 @@ def run_inference(
                                                               else None)}
             manifest["requests"].append(request)
             request_start = time.perf_counter()
+            preparation_error = None
             try:
                 prompt = build_prompt(tree, variant, template_dir=template_dir or config.prompt_dir)
                 request.update(prompt_sha256=prompt.prompt_sha256, template_sha256=prompt.template_sha256)
@@ -814,7 +1010,11 @@ def run_inference(
                     raise ValueError("prompt plus reserved output exceeds context budget; no truncation performed")
                 pending.append((index, prompt, count, request_start))
             except Exception as exc:
-                fail(index, exc)
+                preparation_error = exc
+            if preparation_error is not None:
+                captured = _capture_and_release_failure(preparation_error)
+                preparation_error = None
+                fail(index, captured)
                 finish(index, request_start)
             request["preparation_s"] = time.perf_counter() - request_start
 
@@ -822,6 +1022,7 @@ def run_inference(
         batch = pending[offset:offset + effective_batch_size]
         batch_id = len(manifest["batches"])
         batch_start = time.perf_counter()
+        batch_error = None
         try:
             if callable(batch_method):
                 results = tuple(batch_method([item[1] for item in batch]))
@@ -830,7 +1031,13 @@ def run_inference(
             if len(results) != len(batch):
                 raise ValueError("backend batch result count does not match its input count")
         except Exception as exc:
-            results = (exc,) * len(batch)
+            batch_error = exc
+        if batch_error is not None:
+            captured = _capture_and_release_failure(batch_error)
+            batch_error = None
+            results = (captured,) * len(batch)
+        else:
+            results = _detach_batch_failures(results)
         batch_duration = time.perf_counter() - batch_start
         batch_record: dict[str, Any] = {
             "batch_id": batch_id, "request_indices": [item[0] for item in batch],
@@ -841,9 +1048,12 @@ def run_inference(
         for (index, prompt, count, request_start), result in zip(batch, results):
             request = manifest["requests"][index]
             request.update(batch_id=batch_id, batch_size=len(batch), batch_latency_s=batch_duration)
+            if isinstance(result, _InferenceFailure):
+                fail(index, result)
+                finish(index, request_start)
+                continue
+            response_error = None
             try:
-                if isinstance(result, Exception):
-                    raise result
                 if not isinstance(result, Generation):
                     raise TypeError("backend must return a Generation or an Exception per prompt")
                 if not isinstance(result.text, str):
@@ -886,9 +1096,16 @@ def run_inference(
                     response_policy=config.response_policy,
                 )
             except Exception as exc:
-                fail(index, exc)
+                response_error = exc
+            if response_error is not None:
+                captured = _capture_and_release_failure(response_error)
+                response_error = None
+                fail(index, captured)
             finish(index, request_start)
         batch_record["status_counts"] = dict(Counter(predictions[item[0]]["status"] for item in batch))
+        # A backend may return an invalid object as well as an Exception. Drop
+        # all batch-result references before the next memory admission check.
+        results, result = (), None
     manifest.update(backend_provenance=backend.provenance(), runtime_s=time.perf_counter() - started,
                     status_counts=dict(Counter(record["status"] for record in predictions)),
                     n_inputs=len(trees), n_predictions=len(predictions), n_completions=len(completions))

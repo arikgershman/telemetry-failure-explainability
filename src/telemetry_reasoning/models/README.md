@@ -17,8 +17,11 @@ verification commands, and explanation-quality limitations. No further GPU work
 is required for that milestone.
 
 The stub checks orchestration and contracts; it does not diagnose failures or
-establish LLM accuracy. A real main-model run, training-data formatting,
-preference collection, and LoRA/DPO training remain later Track 5 work.
+establish LLM accuracy. Training-data formatting, CPU tokenizer preparation,
+and the optional GPU launcher are implemented and tested; see the
+[GPU handoff](../../../docs/gpu-handoff.md). Real main-model generation,
+reviewed preference collection, and actual LoRA/DPO optimization/evaluation
+remain open.
 Simulation, parser, dataset validation, and evaluation implementations remain
 with their owning tracks.
 
@@ -474,7 +477,10 @@ Transformers, Kernels, and Hub runtimes blocked by the verification process:
 
 No additional installation, model download, GPU initialization, full-model
 load, or lighter-model run was performed during that safe verification.
-Baseline 2/3 real-HF acceptance remains pending the lab machine.
+At that historical recovery point, Baseline 2/3 real-HF acceptance was pending.
+The retained Nov. 16 generation and offline revalidation subsequently completed
+that two-baseline milestone, as described above. New real-data/main generation
+remains GPU work; see [the prepared GPU handoff](../../../docs/gpu-handoff.md).
 
 The following evidence describes the earlier Oct. 30 foundation checks only.
 The documented baseline smoke and synthetic all-variant smoke were executed on

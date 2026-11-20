@@ -10,6 +10,8 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -51,6 +53,7 @@ from telemetry_reasoning.eval.metrics import (
 
 ROOT = Path(__file__).resolve().parents[1]
 POS, GRIP, ORI, REL = "position_error", "inadequate_grip_strength", "orientation_error", "early_gripper_release"
+SPEED = "excessive_speed"
 
 
 # --------------------------------------------------------------------------- #
@@ -89,6 +92,16 @@ def test_valid_record_roundtrips_and_preserves_string_ids():
     r = PredictionRecord.model_validate(rec("000", evidence=[ev(), ev(feature="ee_pos", value=[0.4, 0.0, 0.1])]))
     assert r.pair_id == "000" and r.key == ("000", "baseline_1")
     assert PredictionRecord.model_validate(r.model_dump(mode="json")) == r
+
+
+@pytest.mark.parametrize("mode", FAILURE_MODES)
+def test_every_canonical_failure_mode_roundtrips_predictions_and_truth(mode):
+    prediction = PredictionRecord.model_validate(rec("000", mode=mode))
+    assert prediction.predicted_failure_mode == mode
+    row, = truth_from_rows([{
+        "pair_id": "000", "task": "pick_up_object", "failed_subtask": "grasp", "failure_mode": mode,
+    }])
+    assert row.failure_mode == mode
 
 
 @pytest.mark.parametrize(
@@ -269,7 +282,8 @@ def test_shipped_eval_config_loads_and_unknown_keys_fail(tmp_path):
     cfg = load_eval_config(DEFAULT_EVAL_CONFIG_PATH)
     assert cfg.evidence.timestamp_tol_s > 0 and cfg.rubric.exclude_backends == ("stub",)
     for text in ("eval:\n  nope: 1\n", "eval: {}\nother: 1\n", "x: 1\n", "eval:\n  evidence:\n    nope: 1\n",
-                 "eval:\n  onset:\n    timestamp_rule: vibes\n"):
+                 "eval:\n  onset:\n    timestamp_rule: vibes\n", "eval: [\n",
+                 "eval:\n  expected_variants: [unknown]\n", "eval:\n  expected_variants: [main, main]\n"):
         p = tmp_path / "e.yaml"
         p.write_text(text)
         with pytest.raises(ValueError):
@@ -322,6 +336,39 @@ def test_classes_absent_from_a_small_set():
     absent = sl["per_class"]["orientation_error"]
     assert absent["support"] == 0 and absent["recall"] is None and absent["f1"] is None
     assert sl["macro_f1"] == 1.0  # only the present label counts
+    assert sl["macro_f1_labels"] == [POS]
+    assert not sl["per_class"][SPEED]["included_in_macro_f1"]
+
+
+def test_four_class_release_reports_speed_as_zero_support_without_lowering_macro_f1():
+    released_modes = [POS, ORI, GRIP, REL]
+    ts = [truth(str(i), mode=mode) for i, mode in enumerate(released_modes)]
+    records = [rec(t.pair_id, mode=t.failure_mode) for t in ts]
+    result = evaluate(ts, index(records, [t.pair_id for t in ts]), CFG)
+    sl = result["variants"]["baseline_1"]["slices"]["all"]
+    assert sl["macro_f1"] == 1.0
+    assert sl["macro_f1_fixed_labels"] == pytest.approx(4 / 5)
+    assert sl["macro_f1_labels"] == released_modes
+    assert sl["labels_absent"] == [SPEED]
+    assert sl["per_class"][SPEED] == {
+        "support": 0, "included_in_macro_f1": False, "predicted": 0, "tp": 0,
+        "precision": None, "recall": None, "f1": None,
+    }
+    assert f"zero-support labels (excluded from macroF1): {SPEED}" in format_summary(result)
+
+
+def test_speed_is_scored_as_a_class_when_supported_and_as_a_false_positive_when_absent():
+    supported = evaluate([truth("A", SPEED)], index([rec("A", mode=SPEED)], ["A"]), CFG)
+    sl = supported["variants"]["baseline_1"]["slices"]["all"]
+    assert sl["macro_f1"] == sl["failure_mode_accuracy"] == 1.0
+    assert sl["per_class"][SPEED]["included_in_macro_f1"]
+    absent = evaluate([truth("A", GRIP)], index([rec("A", mode=SPEED)], ["A"]), CFG)
+    sl = absent["variants"]["baseline_1"]["slices"]["all"]
+    assert sl["n_invalid"] == 0 and sl["n_ok"] == 1
+    assert sl["per_class"][SPEED]["precision"] == 0.0
+    assert sl["failure_mode_accuracy"] == sl["macro_f1"] == 0.0
+    conf = sl["confusion"]
+    assert conf["matrix"][conf["labels"].index(GRIP)][conf["columns"].index(SPEED)] == 1
 
 
 def test_predicting_an_absent_class_is_a_false_positive_not_ignored():
@@ -743,3 +790,136 @@ def test_evaluate_with_an_empty_predictions_file_scores_everything_missing(ev_sc
     assert ev_script.main(["--metadata", "m.csv", "--predictions", str(preds), "--config", str(cfg), "--output-dir", str(out)]) == 0
     sl = json.loads((out / "metrics.json").read_text())["variants"]["baseline_1"]["slices"]["all"]
     assert sl["n_missing"] == 2 and sl["failure_mode_accuracy"] == 0.0
+
+
+# These regression tests cross the public process boundary with real schema
+# readers. The historical script fixtures above replace those readers and
+# consequently could not detect a broken PairedBehaviorTree view conversion.
+def run_public_cli(name, *args):
+    return subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / f"{name}.py"), *map(str, args)],
+        cwd=ROOT, capture_output=True, text=True, timeout=60,
+    )
+
+
+def test_public_cli_scores_real_schema_bt_and_checks_evidence(tmp_path):
+    sample = ROOT / "data/sample"
+    predictions = tmp_path / "baseline_1.jsonl"
+    baseline = run_public_cli("run_baseline", "--bt-dir", sample, "--output", predictions)
+    assert baseline.returncode == 0, baseline.stderr
+    llm_output = tmp_path / "llm"
+    inference = run_public_cli(
+        "run_llm", "--bt-dir", sample, "--variants", "baseline_2", "baseline_3",
+        "--backend", "stub", "--output-dir", llm_output,
+    )
+    assert inference.returncode == 0, inference.stderr
+
+    output = tmp_path / "evaluation"
+    result = run_public_cli(
+        "evaluate", "--metadata", sample / "metadata.csv", "--predictions", predictions,
+        llm_output / "baseline_2.jsonl", llm_output / "baseline_3.jsonl",
+        "--bt-dir", sample, "--output-dir", output,
+        "--run-manifest", predictions.with_suffix(".manifest.json"), llm_output / "run_manifest.json",
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads((output / "metrics.json").read_text())
+    entry = report["variants"]["baseline_1"]
+    assert report["labels"] == list(FAILURE_MODES)
+    assert entry["slices"]["all"]["failure_mode_accuracy"] == 1.0
+    evidence = entry["evidence"]
+    assert evidence["checked"] and evidence["n_items"] > 0
+    assert evidence["support_rate"] == 1.0
+    assert evidence["n_unsupported"] == evidence["n_unverifiable"] == 0
+    assert report["run_manifests"]["baseline_1"]["backend"] == "rules"
+    actual_llm_manifest = json.loads((llm_output / "run_manifest.json").read_text())
+    assert actual_llm_manifest["variants"] == ["baseline_2", "baseline_3"]
+    for variant in actual_llm_manifest["variants"]:
+        assert report["run_manifests"][variant] == actual_llm_manifest
+    assert (output / "plots/confusion_baseline_1_all.png").stat().st_size > 0
+    assert "zero-support labels" in result.stdout and SPEED in result.stdout
+
+
+@pytest.mark.parametrize("problem", ["invalid_bt", "mismatched_bt", "missing_bt_dir", "invalid_config", "invalid_yaml",
+                                      "invalid_run_manifest", "unknown_variant", "duplicate_variant"])
+def test_public_cli_rejects_malformed_inputs_without_traceback_or_partial_report(tmp_path, problem):
+    sample = ROOT / "data/sample"
+    predictions = tmp_path / "predictions.jsonl"
+    write_predictions(predictions, [rec("000")])
+    output = tmp_path / "evaluation"
+    extra = []
+    if problem in {"invalid_bt", "mismatched_bt", "missing_bt_dir"}:
+        bt_dir = tmp_path / "bt"
+        if problem != "missing_bt_dir":
+            bt_dir.mkdir()
+            if problem == "invalid_bt":
+                content = "{ broken JSON"
+            else:
+                tree = json.loads((sample / "pair_000_bt.json").read_text())
+                tree["metadata"]["pair_id"] = "999"
+                content = json.dumps(tree)
+            (bt_dir / "pair_000_bt.json").write_text(content)
+        extra = ["--bt-dir", bt_dir]
+    elif problem in {"invalid_config", "invalid_yaml"}:
+        cfg = tmp_path / "eval.yaml"
+        cfg.write_text("eval:\n  unknown_key: true\n" if problem == "invalid_config" else "eval: [\n")
+        extra = ["--config", cfg]
+    elif problem == "invalid_run_manifest":
+        manifest = tmp_path / "manifest.json"
+        manifest.write_text("[]")
+        extra = ["--run-manifest", manifest]
+    elif problem == "unknown_variant":
+        extra = ["--variants", "unknown"]
+    elif problem == "duplicate_variant":
+        extra = ["--variants", "main", "main"]
+    result = run_public_cli(
+        "evaluate", "--metadata", sample / "metadata.csv", "--predictions", predictions,
+        "--output-dir", output, *extra,
+    )
+    assert result.returncode == 2, result.stderr
+    assert "error:" in result.stderr and "Traceback" not in result.stderr
+    assert not output.exists()
+
+
+def test_public_cli_reports_malformed_prediction_lines_without_dropping_truth(tmp_path):
+    predictions = tmp_path / "predictions.jsonl"
+    bad = rec("000", mode="invalid_mode")
+    predictions.write_text(json.dumps(bad) + "\n{broken JSON\n")
+    output = tmp_path / "evaluation"
+    result = run_public_cli(
+        "evaluate", "--metadata", ROOT / "data/sample/metadata.csv", "--predictions", predictions,
+        "--output-dir", output,
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads((output / "metrics.json").read_text())
+    sl = report["variants"]["baseline_1"]["slices"]["all"]
+    assert sl["n"] == sl["n_invalid"] == 1 and sl["failure_mode_accuracy"] == 0.0
+    assert report["unattributable_invalid_lines"]["count"] == 1
+
+
+def test_missing_individual_bt_keeps_evidence_explicitly_unverifiable(tmp_path):
+    module = load_script("evaluate")
+    views = module.load_views(tmp_path, [truth("000")])
+    result = evaluate([truth("000")], index([rec("000", evidence=[ev()])], ["000"]), CFG, views=views)
+    evidence = result["variants"]["baseline_1"]["evidence"]
+    assert evidence["checked"] and evidence["n_unverifiable"] == 1
+    assert evidence["n_unsupported"] == 0 and evidence["support_rate"] is None
+
+
+@pytest.mark.parametrize("declaration", [
+    {"variants": []}, {"variants": "main"}, {"variants": ["unknown"]},
+    {"variants": ["main", "main"]}, {"variants": [{}]},
+    {"model_variant": "baseline_1", "variants": ["baseline_2", "baseline_3"]},
+])
+def test_run_manifest_rejects_invalid_or_conflicting_variant_declarations(tmp_path, declaration):
+    path = tmp_path / "run_manifest.json"
+    path.write_text(json.dumps(declaration))
+    with pytest.raises(ContractError):
+        load_script("evaluate")._load_run_manifests([path])
+
+
+def test_run_manifest_rejects_overlapping_single_and_multi_variant_receipts(tmp_path):
+    first, second = tmp_path / "rules.json", tmp_path / "llm.json"
+    first.write_text(json.dumps({"model_variant": "main", "backend": "rules"}))
+    second.write_text(json.dumps({"variants": ["baseline_2", "main"], "backend": "stub"}))
+    with pytest.raises(ContractError, match="duplicate run manifest for main"):
+        load_script("evaluate")._load_run_manifests([first, second])

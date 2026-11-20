@@ -16,7 +16,7 @@ Pipeline
 The record layout follows the Track 4 prediction contract described in the
 TODO (``pair_id``, ``model_variant``, ``predicted_failure_mode``,
 ``predicted_subtask``, ``explanation``, ``evidence``, ``status``,
-``backend``). Validate it against ``eval/contracts.py`` once that exists.
+``backend``); ``eval/contracts.py`` validates this shared contract.
 
 Thresholds come from ``configs/rules.yaml`` and are initial mock-data values,
 not calibrated on real runs.
@@ -51,6 +51,7 @@ DEFAULT_MODEL_VARIANT = "baseline_1"
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / "configs" / "rules.yaml"
 
 PICKUP_TASK = "pick_up_object"
+TRANSPORT_TASK = "transport_object"
 
 KNOWN_SUBTASKS = frozenset(
     {
@@ -84,6 +85,7 @@ LOW_GRIP = "inadequate_grip_strength"
 EARLY_RELEASE = "early_gripper_release"
 POSITION = "position_error"
 ORIENTATION = "orientation_error"
+SPEED = "excessive_speed"
 
 # (dominant, dominated): when both fire in the same stage, the dominated one is
 # treated as a consequence. A released gripper explains low force, not vice versa.
@@ -121,6 +123,16 @@ class RuleConfig(BaseModel):
     orientation_stages: tuple[str, ...] = ("align",)
     max_orientation_rad: float = Field(0.2, gt=0.0)
 
+    # Observed average EE translation between retained samples, in metres/sec.
+    # This is an operational limit, not an estimate of commanded joint speed.
+    max_ee_speed_m_s: float = Field(0.5, gt=0.0, allow_inf_nan=False)
+    speed_persist_s: float = Field(0.5, gt=0.0, allow_inf_nan=False)
+    speed_min_intervals: int = Field(2, ge=2)
+    speed_stages: tuple[str, ...] = (
+        "approach", "align", "grasp", "lift", "maintain_grasp",
+        "move_along_path", "reach_target",
+    )
+
     follow_stages: tuple[str, ...] = ("lift", "maintain_grasp", "move_along_path")
     min_ee_travel_m: float = Field(0.05, gt=0.0)
     min_follow_ratio: float = Field(0.5, ge=0.0, le=1.0)
@@ -135,6 +147,7 @@ class RuleConfig(BaseModel):
             "position_stages",
             "z_check_stages",
             "orientation_stages",
+            "speed_stages",
             "follow_stages",
         )
         for name in stage_fields:
@@ -473,11 +486,71 @@ def _rule_orientation(trace: _Trace, cfg: RuleConfig) -> Optional[Finding]:
     return None
 
 
+def _rule_speed(trace: _Trace, cfg: RuleConfig) -> Optional[Finding]:
+    """Persistent observed EE translation above an explicit physical limit.
+
+    Retained positions give displacement / elapsed time, a lower bound on the
+    interval's mean path speed. They do not recover instantaneous peaks,
+    commanded speed, or a producer's injection multiplier. Object velocity is
+    deliberately unused: fast object motion can be a drop or other consequence.
+
+    Require consecutive above-limit intervals *within one stage* spanning the
+    configured duration. At least two intervals and non-reversing adjacent
+    displacements reject an isolated position spike and its return. Compressed
+    or unevenly sampled traces use their actual timestamps; fewer than three
+    retained samples, short stages, and reversal-heavy motion abstain rather
+    than infer unobserved motion. Equality with the speed limit is benign.
+    Comparisons allow only floating-point roundoff (1e-12 relative and 1e-12
+    m/s or seconds absolute), not telemetry noise or a physical safety margin.
+    """
+    if trace.task not in {PICKUP_TASK, TRANSPORT_TASK}:
+        return None
+    for name in trace.stage_names:
+        rows = trace.by_stage[name]
+        if name not in cfg.speed_stages:
+            continue
+        start = 0
+        speeds: list[float] = []
+        previous_delta: Optional[tuple[float, ...]] = None
+        for i in range(1, len(rows)):
+            a, b = rows[i - 1], rows[i]
+            delta = tuple(y - x for x, y in zip(a.ee_pos, b.ee_pos))
+            speed = math.dist(a.ee_pos, b.ee_pos) / (b.t - a.t)
+            if speed <= cfg.max_ee_speed_m_s or math.isclose(
+                speed, cfg.max_ee_speed_m_s, rel_tol=1e-12, abs_tol=1e-12,
+            ):
+                speeds = []
+                previous_delta = None
+                continue
+            if previous_delta is None or sum(x * y for x, y in zip(previous_delta, delta)) < 0.0:
+                start = i - 1
+                speeds = []
+            speeds.append(speed)
+            previous_delta = delta
+            duration = b.t - rows[start].t
+            persistent = duration >= cfg.speed_persist_s or math.isclose(
+                duration, cfg.speed_persist_s, rel_tol=1e-12, abs_tol=1e-12,
+            )
+            if len(speeds) >= cfg.speed_min_intervals and persistent:
+                return Finding(
+                    SPEED,
+                    name,
+                    rows[start].t,
+                    [_ev(s, "ee_pos") for s in rows[start : i + 1]],
+                    {
+                        "min_speed": min(speeds), "limit": cfg.max_ee_speed_m_s,
+                        "duration": duration, "end_t": b.t,
+                    },
+                )
+    return None
+
+
 _RULES: tuple[Callable[[_Trace, RuleConfig], Optional[Finding]], ...] = (
     _rule_low_grip,
     _rule_early_release,
     _rule_position,
     _rule_orientation,
+    _rule_speed,
 )
 
 
@@ -554,6 +627,13 @@ def _describe(f: Finding) -> str:
         if k["z_hit"]:
             parts.append(f"{k['z_err']:.3f} m off the expected grasp height (limit {k['z_limit']:.3f} m)")
         return f"At the end of {f.stage} (t={f.onset:.2f} s), the end effector was " + " and ".join(parts) + "."
+    if f.mode == SPEED:
+        return (
+            f"In {f.stage}, consecutive retained end-effector positions from "
+            f"t={f.onset:.2f} s to t={k['end_t']:.2f} s implied interval-average "
+            f"translational speeds of at least {k['min_speed']:.3f} m/s, above the "
+            f"configured {k['limit']:.3f} m/s limit for {k['duration']:.2f} s."
+        )
     return (  # ORIENTATION
         f"At the end of {f.stage} (t={f.onset:.2f} s), the gripper orientation differed from "
         f"the object's by {k['angle']:.2f} rad, above the {k['limit']:.2f} rad limit."

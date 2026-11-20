@@ -1281,3 +1281,170 @@ def test_resident_inference_still_refuses_insufficient_workspace(tree, monkeypat
     with pytest.raises(llm.ResourceSafetyError, match="headroom"):
         backend.generate(build_prompt(tree, "baseline_3"))
     assert len(calls["generate"]) == 1
+
+
+@pytest.mark.parametrize("cached_free_gib", [1, 4])
+def test_resident_cuda_releases_unused_cache_only_when_existing_guard_would_refuse(
+    tree, monkeypatch, cached_free_gib,
+):
+    calls = fake_hf_modules(monkeypatch, cuda_available=True)
+    backend = llm.HFBackend(LLMConfig(device="cuda", dtype="bfloat16", max_new_tokens=8))
+    backend.generate(build_prompt(tree, "baseline_2"))
+    memory = {"free": cached_free_gib * llm.GIB, "releases": 0}
+
+    def empty_cache():
+        memory["releases"] += 1
+        memory["free"] = 8 * llm.GIB
+
+    backend._torch.cuda.mem_get_info = lambda: (memory["free"], 32 * llm.GIB)
+    backend._torch.cuda.empty_cache = empty_cache
+    backend.generate(build_prompt(tree, "baseline_3"))
+    assert len(calls["models"]) == 1 and len(calls["generate"]) == 2
+    assert memory["releases"] == 1
+    resources = backend.provenance()["resources"]
+    assert resources["cuda_free_memory_bytes"] == 8 * llm.GIB
+    assert resources["minimum_cuda_memory_bytes"] == 4 * llm.GIB + resources["kv_cache_estimate_bytes"]
+    assert resources["cuda_cache_release"] == {
+        "attempted": True,
+        "reason": "resident_guard_insufficient_driver_free_memory",
+        "free_before_bytes": cached_free_gib * llm.GIB,
+        "free_after_bytes": 8 * llm.GIB,
+        "minimum_cuda_memory_bytes": (4 * llm.GIB if cached_free_gib == 1
+                                      else resources["minimum_cuda_memory_bytes"]),
+    }
+    assert resources["cuda_cache_releases"] == [resources["cuda_cache_release"]]
+
+
+def test_resident_cuda_cache_release_does_not_relax_memory_threshold(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch, cuda_available=True)
+    backend = llm.HFBackend(LLMConfig(device="cuda", dtype="bfloat16", max_new_tokens=8))
+    backend.generate(build_prompt(tree, "baseline_2"))
+    memory = {"free": 1 * llm.GIB, "releases": 0}
+
+    def empty_cache():
+        memory["releases"] += 1
+        memory["free"] = 2 * llm.GIB
+
+    backend._torch.cuda.mem_get_info = lambda: (memory["free"], 32 * llm.GIB)
+    backend._torch.cuda.empty_cache = empty_cache
+    with pytest.raises(llm.ResourceSafetyError, match="VRAM"):
+        backend.generate(build_prompt(tree, "baseline_3"))
+    assert memory["releases"] == 1
+    assert len(calls["models"]) == len(calls["generate"]) == 1
+    resources = backend.provenance()["resources"]
+    assert resources["cuda_free_memory_bytes"] == 2 * llm.GIB
+    assert resources["minimum_cuda_memory_bytes"] == 4 * llm.GIB
+    assert resources["cuda_cache_release"]["free_after_bytes"] == 2 * llm.GIB
+
+
+def test_initial_cuda_admission_does_not_release_cache_to_bypass_checkpoint_guard(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch, cuda_available=True)
+    backend = llm.HFBackend(LLMConfig(device="cuda", dtype="bfloat16"))
+    backend.count_tokens(build_prompt(tree, "baseline_2"))
+    backend._torch.cuda.mem_get_info = lambda: (8 * llm.GIB, 32 * llm.GIB)
+    backend._torch.cuda.empty_cache = lambda: pytest.fail("initial admission released cache")
+    with pytest.raises(llm.ResourceSafetyError, match="VRAM"):
+        backend.generate(build_prompt(tree, "baseline_2"))
+    assert not calls["models"] and not calls["generate"]
+
+
+def test_resident_cuda_does_not_release_cache_with_sufficient_free_memory(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch, cuda_available=True)
+    backend = llm.HFBackend(LLMConfig(device="cuda", dtype="bfloat16", max_new_tokens=8))
+    backend.generate(build_prompt(tree, "baseline_2"))
+    backend._torch.cuda.mem_get_info = lambda: (8 * llm.GIB, 32 * llm.GIB)
+    backend._torch.cuda.empty_cache = lambda: pytest.fail("sufficient headroom released cache")
+    backend.generate(build_prompt(tree, "baseline_3"))
+    assert len(calls["models"]) == 1 and len(calls["generate"]) == 2
+    assert "cuda_cache_release" not in backend.provenance()["resources"]
+
+
+@pytest.mark.parametrize("free,total", [(True, 32 * llm.GIB), (1.5, 32 * llm.GIB), (32 * llm.GIB, None)])
+def test_resident_cuda_rejects_invalid_memory_measurements_without_cache_release(
+    tree, monkeypatch, free, total,
+):
+    calls = fake_hf_modules(monkeypatch, cuda_available=True)
+    backend = llm.HFBackend(LLMConfig(device="cuda", dtype="bfloat16", max_new_tokens=8))
+    backend.generate(build_prompt(tree, "baseline_2"))
+    backend._torch.cuda.mem_get_info = lambda: (free, total)
+    backend._torch.cuda.empty_cache = lambda: pytest.fail("invalid measurements triggered cache release")
+    with pytest.raises(llm.ResourceSafetyError, match="VRAM"):
+        backend.generate(build_prompt(tree, "baseline_3"))
+    assert len(calls["generate"]) == 1
+
+
+def test_resident_cuda_without_cache_release_api_still_refuses_low_memory(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch, cuda_available=True)
+    backend = llm.HFBackend(LLMConfig(device="cuda", dtype="bfloat16", max_new_tokens=8))
+    backend.generate(build_prompt(tree, "baseline_2"))
+    backend._torch.cuda.mem_get_info = lambda: (1 * llm.GIB, 32 * llm.GIB)
+    assert not hasattr(backend._torch.cuda, "empty_cache")
+    with pytest.raises(llm.ResourceSafetyError, match="VRAM"):
+        backend.generate(build_prompt(tree, "baseline_3"))
+    assert len(calls["generate"]) == 1
+
+
+@pytest.mark.parametrize("failure_stage", ["release", "remeasure"])
+def test_resident_cuda_cache_recovery_failure_is_a_recorded_refusal(tree, monkeypatch, failure_stage):
+    calls = fake_hf_modules(monkeypatch, cuda_available=True)
+    backend = llm.HFBackend(LLMConfig(device="cuda", dtype="bfloat16", max_new_tokens=8))
+    backend.generate(build_prompt(tree, "baseline_2"))
+    recovery = {"released": False, "attempts": 0}
+
+    def empty_cache():
+        recovery["attempts"] += 1
+        if failure_stage == "release":
+            raise RuntimeError("synthetic cache release failure")
+        recovery["released"] = True
+
+    def memory():
+        if recovery["released"]:
+            raise RuntimeError("synthetic memory remeasurement failure")
+        return 1 * llm.GIB, 32 * llm.GIB
+
+    backend._torch.cuda.mem_get_info = memory
+    backend._torch.cuda.empty_cache = empty_cache
+    with pytest.raises(llm.ResourceSafetyError, match="after releasing unused cache") as error:
+        backend.generate(build_prompt(tree, "baseline_3"))
+    assert isinstance(error.value.__cause__, RuntimeError)
+    assert recovery["attempts"] == 1 and len(calls["generate"]) == 1
+    release = backend.provenance()["resources"]["cuda_cache_release"]
+    assert release["attempted"] is True and release["error_type"] == "RuntimeError"
+
+
+def test_bad_json_does_not_prevent_later_cuda_generation_after_cache_recovery(tree, monkeypatch):
+    calls = fake_hf_modules(monkeypatch, cuda_available=True)
+    config = LLMConfig(device="cuda", dtype="bfloat16", max_new_tokens=8)
+    backend = llm.HFBackend(config)
+    second_prompt = build_prompt(tree, "baseline_3")
+    backend.count_tokens(build_prompt(tree, "baseline_2"))
+    memory = {"released": False, "attempts": 0}
+
+    def current_memory():
+        free = 1 * llm.GIB if calls["generate"] and not memory["released"] else 32 * llm.GIB
+        return free, 32 * llm.GIB
+
+    def empty_cache():
+        memory["attempts"] += 1
+        memory["released"] = True
+
+    def decode(tokens, **kwargs):
+        calls["decoded"].append((tokens, kwargs))
+        return "not JSON" if len(calls["decoded"]) == 1 else json.dumps(model_response(second_prompt))
+
+    backend._torch.cuda.mem_get_info = current_memory
+    backend._torch.cuda.empty_cache = empty_cache
+    backend._tokenizer.decode = decode
+    result = run_inference([tree], ["baseline_2", "baseline_3"], config, backend=backend)
+    assert [row["status"] for row in result.predictions] == ["error", "ok"]
+    assert result.manifest["requests"][0]["error_type"] == "JSONDecodeError"
+    assert "error_type" not in result.manifest["requests"][1]
+    assert result.completions[0]["text"] == "not JSON"
+    assert result.completions[0]["completion_sha256"] == hashlib.sha256(b"not JSON").hexdigest()
+    assert len(result.completions) == 2
+    assert len(calls["models"]) == 1 and len(calls["generate"]) == 2
+    assert memory["attempts"] == 1
+    resources = result.manifest["backend_provenance"]["resources"]
+    assert resources["cuda_cache_releases"] == [resources["cuda_cache_release"]]
+    assert resources["cuda_cache_release"]["free_before_bytes"] == 1 * llm.GIB
+    assert resources["cuda_cache_release"]["free_after_bytes"] == 32 * llm.GIB

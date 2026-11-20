@@ -1,0 +1,24 @@
+# Production compression v1, selected on grouped dev data only (2026-11-18).
+# See parser-production-v1.selection.json. Shared mock defaults remain unchanged.
+simulation:
+  sim_hz: 500
+  sim_dt_s: 0.002
+  logging_hz: 50
+  logging_dt_s: 0.02
+  duration_min_s: 6.0
+  duration_max_s: 10.0
+  mock_duration_s: 8.0
+parser:
+  k_uniform_samples: 5
+  major_event_thresholds:
+    joint_positions: 0.1
+    joint_velocities: 0.5
+    joint_torques: 1.0
+    gripper_state: 0.5
+    gripper_force: 2.0
+    ee_pos: 0.03
+    ee_quat: 0.1
+    obj_pos: 0.03
+    obj_quat: 0.1
+    obj_vel: 0.15
+    contact_force: 2.0

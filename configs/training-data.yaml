@@ -1,0 +1,25 @@
+# Formatter/training handoff notes, not an executable optimizer configuration.
+# Supply this file with --config to fingerprint the reviewed configuration.
+schema_version: 1
+base_inference_config: configs/llm.yaml
+formatter:
+  response_policy: strict_json_v1
+  bt_subdir: enriched-bt
+  prompt_format: conversational_messages
+  dpo_fields: [prompt, chosen, rejected]
+  sft_fields: [messages]
+  split_unit: [task, initial_condition_id]
+  training_split: train
+  validation_split: dev
+  excluded_split: test
+  main_requires_computed_divergence: true
+future_training:
+  preference_optimization: DPO
+  adapter_method: LoRA
+  model_and_tokenizer: inherit_exact_revisions_from_base_inference_config
+  chat_template: apply_the_same_tokenizer_chat_template_as_inference
+  context_policy: reject_over_budget_examples_without_truncating_task_evidence
+  reviewed_preferences_required: true
+  synthetic_demo_eligible_for_training_acceptance: false
+  optimizer_execution: deferred_to_GPU
+  adapter_hyperparameters: require_explicit_recorded_GPU_experiment_configuration

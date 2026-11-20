@@ -2,11 +2,13 @@
 """Create reproducible train/dev/test splits by initial condition."""
 
 import argparse
-import csv
 import json
 import random
 from collections import Counter
 from pathlib import Path
+
+from telemetry_reasoning.io import read_metadata_csv
+from telemetry_reasoning.sim.dataset_certification import safe_source_path
 
 TASKS = ("pick_up_object", "transport_object")
 SPLIT_SIZES = {"train": 35, "dev": 5, "test": 10}
@@ -25,10 +27,19 @@ def create_splits(batch: Path, seed: int = 723) -> dict:
     for task in TASKS:
         task_dir = batch / task
 
-        with (task_dir / "metadata.csv").open(
-            newline="", encoding="utf-8-sig"
-        ) as stream:
-            pairs = list(csv.DictReader(stream))
+        pairs = [row.model_dump(mode="json") for row in read_metadata_csv(task_dir / "metadata.csv")]
+        references = []
+        for pair in pairs:
+            if pair["task"] != task:
+                raise ValueError(f"{task}: metadata task identity mismatch")
+            for kind in ("success", "failure"):
+                path = safe_source_path(batch, f"{task}/{pair[f'{kind}_file']}")
+                references.append(path)
+        if len(set(references)) != len(references):
+            raise ValueError(f"{task}: reused telemetry file references")
+        existing = [path for path in references if path.is_file()]
+        if len({(path.stat().st_dev, path.stat().st_ino) for path in existing}) != len(existing):
+            raise ValueError(f"{task}: reused telemetry file inodes")
 
         with (task_dir / "diagnostics.jsonl").open(
             encoding="utf-8"
@@ -55,8 +66,12 @@ def create_splits(batch: Path, seed: int = 723) -> dict:
         conditions = sorted(set(condition_by_pair.values()), key=int)
         counts = Counter(condition_by_pair.values())
 
-        if len(conditions) != 50 or any(count != 10 for count in counts.values()):
+        if set(conditions) != {str(i) for i in range(50)} or any(count != 10 for count in counts.values()):
             raise ValueError(f"{task}: unexpected initial-condition distribution")
+        modes = Counter(pair['failure_mode'] for pair in pairs)
+        if modes != Counter({mode: 125 for mode in (
+                'position_error', 'orientation_error', 'inadequate_grip_strength', 'early_gripper_release')}):
+            raise ValueError(f"{task}: unexpected failure-mode distribution")
 
         rng.shuffle(conditions)
 
@@ -96,6 +111,17 @@ def create_splits(batch: Path, seed: int = 723) -> dict:
                 raise ValueError(f"{task}/{split}: incomplete failure-mode coverage")
 
     return manifest
+
+
+def verify_splits(batch: Path, manifest: dict, seed: int) -> list[str]:
+    """Recompute source-bound grouping, identity, coverage, and file references."""
+    try:
+        expected = create_splits(batch, seed)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        return [f"Cannot verify grouped splits: {exc}"]
+    if expected != manifest:
+        return ["Grouped splits differ from deterministic source-bound assignments"]
+    return []
 
 
 def main():

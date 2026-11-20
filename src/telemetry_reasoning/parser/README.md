@@ -36,8 +36,9 @@ PYTHONPATH=src .venv/bin/python scripts/parse_dataset.py --metadata DATA/metadat
 ```
 
 Use a fresh or empty output directory. Task-local pair IDs in the supplied
-archive overlap, so parse each task into a separate directory until Track 2
-supplies unique IDs. Never silently prefix or relabel metadata IDs.
+archive overlap, so parse each task into a separate directory and join across
+tasks with `(task, pair_id)`. Track 2's handoff preserves these original IDs;
+never silently prefix or relabel metadata IDs.
 
 ```python
 from telemetry_reasoning.parser import build_paired_bt, build_paired_bts, parse_dataset
@@ -63,6 +64,10 @@ unsafe filename IDs are rejected before serialization. Outputs are staged
 before publication, and fatal storage errors do not publish a partial batch.
 CLI exit codes are 0 for all pairs written, 1 for recorded pair rejections,
 and 2 for fatal input/configuration/storage failures.
+
+Parsing deliberately leaves observed-stage divergence uncomputed. Run the
+separate enrichment stage when a comparison is required; there is no
+`--divergence-config` flag on `parse_dataset.py`.
 
 `parse_report.json` includes written/rejected inventories, source/output/config
 hashes, complete-versus-partial failure coverage, observed/unobserved stage
@@ -104,8 +109,11 @@ boundaries. Quaternion deltas are component differences, not angular distances.
 Compression retains original stage endpoints, up to `k` uniform interior
 observations, and clipped `t-1/t/t+1` neighborhoods around adjacent changes
 strictly exceeding configured thresholds. No event comparison crosses a stage
-boundary. `k=0` disables uniform interior sampling. The parser configuration
-remains provisional; this change does not calibrate settings on real data.
+boundary. `k=0` disables uniform interior sampling. The sample configuration
+remains unchanged. Production selection is recorded separately in
+`configs/parser-production-v1.yaml` and its selection receipt, based on fresh
+dev-only sweeps. All 1,000 enriched outputs and numerical onset diagnostics are
+documented in [the production handoff](../../../docs/production-parser.md).
 
 Diagnostics compare retained rows to raw 50 Hz observations. They report raw
 and retained counts, compression ratios, event-center and complete-neighborhood
@@ -138,6 +146,58 @@ neighborhood and not increasing per-pair maximum reconstruction errors over
 the base beyond 1e-12 numerical tolerance. All candidates and tie rules are
 reported. Configuration is never changed automatically.
 
+The [Track 2 handoff](../../../docs/track2-dataset-handoff.md) records completed
+nine-candidate sweeps on 50 dev pairs per task, recommending
+`k=5;threshold_scale=1` for both tasks. The task manifests are the supported
+tuning inputs. Confirm those archived inputs and record the final production
+choice before publishing the enriched 1,000-pair dataset; the tool does not
+promote a recommendation automatically.
+
+## Deterministic divergence enrichment
+
+From the repository root:
+
+```bash
+python scripts/enrich_divergence.py --bt-dir OUTPUT/bt --config configs/divergence.yaml --output-dir OUTPUT/enriched-bt
+```
+
+`parser/divergence_metrics.py` provides `DivergenceConfig`,
+`load_divergence_config()`, `compute_subtask_divergence()`, and
+`enrich_paired_bt()`. The separate YAML document has exactly one `divergence`
+section containing a nonnegative `thresholds` entry for every
+`TelemetryFeature`. Thresholds have each feature's native units. They compare
+paired traces and are independent of compression's adjacent-row event
+thresholds.
+
+For each aligned grid point, a scalar feature contributes its absolute
+difference and a vector feature contributes its largest absolute component
+difference. `max_abs_deltas` is the maximum of those differences over the
+aligned grid for every feature. Quaternion differences are sign-aligned
+component deltas, not rotation angles. The first divergence is the earliest
+grid point whose difference strictly exceeds any configured feature threshold,
+expressed in the failure trace's absolute timestamp coordinate. Equality to a
+threshold does not trigger an onset. This coordinate may be interpolated and
+does not establish exact observed or physical onset.
+
+Enrichment returns a validated deep copy, preserving source observations and
+storage metadata. Every observed stage becomes `computed`; identical traces
+have complete zero deltas and a null first timestamp. Every unobserved stage
+stays `not_comparable` with a null divergence object. Main-model prompts require
+computed divergence for observed stages and accept unavailable suffix stages.
+
+The CLI validates the full batch before staged publication, requires a separate
+fresh or empty output directory, and writes only matching
+`pair_<pair_id>_bt.json` outputs plus `divergence_report.json`. The report records
+source/output/config hashes and computed/unavailable counts. Exit codes are
+0 for success and 2 for invalid input, configuration, or storage failures.
+
+The known synthetic grip event is 5.10 s with a 12 N maximum delta under a
+2 N grip threshold. Current metric tests also cover strict equality, identical
+traces, main/baseline prompt compatibility, partial traces, and complete
+configuration. Broader scalar/vector/timing metric cases and raw-reference
+compressed-onset error reporting remain acceptance work; alignment tests alone
+do not establish those metric-level guarantees.
+
 ## Model views and track boundaries
 
 Storage retains scoring metadata. Model inputs use `to_failure_only()`,
@@ -152,13 +212,16 @@ are owned by their respective tracks. Track 2 verifies valid termination and
 physical outcomes. Track 4 should handle empty stages and interrupted endpoints
 in plots and rules. Track 5 should distinguish uncomputed observed-stage
 divergence from unobserved stages when building its prompts. Evidence must
-always cite real failure observations. Numerical divergence scoring remains a
-separate milestone; this parser does not claim to compute those metrics.
+always cite real failure observations. Numerical divergence scoring is the
+explicit enrichment stage described above. Physical-outcome certification,
+raw-reference onset error, and production dataset publication remain separate
+acceptance gates.
 
 ## Verification
 
 ```bash
-PYTHONPATH=src .venv/bin/python -W error -m pytest tests/test_parser.py tests/test_bt_pipeline.py tests/test_partial_traces.py tests/test_divergence.py tests/test_compression_diagnostics.py tests/test_compression_tuning.py
+PYTHONPATH=src .venv/bin/python -W error -m pytest tests/test_parser.py tests/test_bt_pipeline.py tests/test_partial_traces.py tests/test_divergence.py tests/test_divergence_metrics.py tests/test_compression_diagnostics.py tests/test_compression_tuning.py
+python scripts/integration_smoke.py --backend stub --output-dir runs/integration-cpu
 ```
 
 The suite covers both tasks and every failure-prefix length, invalid sequences,
@@ -167,10 +230,21 @@ exclusions, elapsed-time censoring, singleton/quaternion/closure edge cases,
 compression quality, and grouped tuning. Fresh sample generation reproduces
 the checked-in files byte for byte.
 
-Current verification passes all 231 Track 3 tests with warnings treated as
-errors. The full suite has 358 passes and the pre-existing Track 4 evaluator
-vocabulary failure for `excessive_speed`. All 1,000 supplied pairs also parse
-and schema-validate, including 390 partial failure prefixes, with all 2,007
+The Nov. 18 CPU foundation verification passed the full suite with **826 passed
+and 21 skipped** (15 archived-release checks and six opt-in real-physics checks).
+The persisted CPU integration run passed seven public CLI stages with four
+validated predictions and 10 PNG plots. See [the current acceptance receipt](../../../TODO.md#nov-18-cpu-foundation-acceptance-receipt)
+for commands, artifact location, and scope. These checks do not complete
+real-producer, real-model, or release certification gates.
+
+### Historical partial-trace verification receipt
+
+The partial-trace implementation passed all 231 Track 3 tests with warnings
+treated as errors at that handoff. Its then-current full suite had 358 passes
+and the Track 4 evaluator vocabulary failure for `excessive_speed`. These counts
+describe that historical run; use the commands above for current verification.
+All 1,000 supplied pairs also parsed
+and schema-validated, including 390 partial failure prefixes, with all 2,007
 source files unchanged. The report at
 `runs/track3-partial-traces/current-xorunaw4/verification.json` records the
 per-task counts and alignment modes. This verifies parser structure and
@@ -201,15 +275,11 @@ tree builds, 1,400 aligned nodes, and 4,247 segment-label sequences. The termina
 analytic-motion checks retain closure events before asserting equal prefixes;
 disabled event retention can deliberately lose interior transitions.
 
-Two **Track 4 integration blockers** remain outside this implementation:
-
-- `scripts/evaluate.py:64` calls `.model_dump()` on the dictionary returned by
-  `to_failure_only()`. The evaluator CLI fails with `--bt-dir`, for complete
-  and partial trees. Use the returned dictionary directly in that owned adapter.
-- `eval/plots.py:149-150` takes `min()`/`max()` of every failure sample list.
-  Complete-tree plots render, but partial-tree plots fail on the unobserved
-  suffix. That owner must skip unavailable spans and distinguish unavailable
-  comparisons from uncomputed ones.
-
-Exact CLI stderr, plot pair IDs, predictions, and direct-API evaluation results
-are retained with the report. Those owned modules were not changed.
+That historical report also captured an evaluator adapter failure with
+`--bt-dir` and a plot failure on unobserved suffix stages. Those receipts remain
+useful regression evidence; they are not the current list of blockers. Current
+evidence-enabled CLI and partial-trace plotting checks are covered by Track 4's
+tests and the CPU integration suite. The integration run writes stage logs and
+an `integration_manifest.json` with status, assertions, and artifact hashes.
+It validates synthetic plumbing without certifying the archived release or
+real-model behavior.

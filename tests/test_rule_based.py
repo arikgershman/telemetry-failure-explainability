@@ -179,6 +179,20 @@ def test_config_rejects_nonpositive_threshold(tmp_path):
         load_rule_config(write_yaml(tmp_path, "rules:\n  min_grip_force_n: 0\n"))
 
 
+@pytest.mark.parametrize(
+    "setting",
+    [
+        "max_ee_speed_m_s: 0", "max_ee_speed_m_s: -1", "max_ee_speed_m_s: .inf",
+        "max_ee_speed_m_s: .nan", "speed_persist_s: 0", "speed_persist_s: .inf",
+        "speed_persist_s: .nan", "speed_min_intervals: 1", "speed_min_intervals: 2.5",
+        "speed_stages: [not_a_stage]",
+    ],
+)
+def test_config_rejects_invalid_speed_settings(tmp_path, setting):
+    with pytest.raises(ValueError):
+        load_rule_config(write_yaml(tmp_path, f"rules:\n  {setting}\n"))
+
+
 # --------------------------------------------------------------------------- #
 # The motivating example: pair_000-like inadequate grip
 # --------------------------------------------------------------------------- #
@@ -340,6 +354,181 @@ def test_transport_abstains_on_unobservable_target(cfg):
     assert rec["status"] == "abstain"
     assert rec["predicted_failure_mode"] is None
     assert "did not follow" in rec["explanation"]
+
+
+# --------------------------------------------------------------------------- #
+# Excessive observed EE speed: physical units, retention, and uncertainty
+# --------------------------------------------------------------------------- #
+def speed_view(
+    task=PICKUP,
+    times=(0.0, 0.5, 1.0),
+    *,
+    speed=0.75,
+    positions=None,
+    **fns,
+):
+    stage = "lift" if task == PICKUP else "move_along_path"
+    coordinates = positions or [speed * (t - times[0]) for t in times]
+    by_time = dict(zip(times, coordinates))
+    return build_view(
+        {stage: list(times)}, task, closed_from=0.0,
+        ee=lambda t, s: [by_time[t], 0.0, 0.2], **fns,
+    )
+
+
+@pytest.mark.parametrize("task", [PICKUP, TRANSPORT])
+def test_persistent_speed_in_both_tasks_uses_observed_ee_positions(cfg, task):
+    view = speed_view(task)
+    rec = predict(view, cfg)
+    stage = "lift" if task == PICKUP else "move_along_path"
+    assert (rec["status"], rec["predicted_failure_mode"], rec["predicted_subtask"]) == (
+        "ok", "excessive_speed", stage,
+    )
+    assert "0.750 m/s" in rec["explanation"]
+    assert "configured 0.500 m/s" in rec["explanation"]
+    assert "interval-average" in rec["explanation"]
+    assert rec["evidence"] == [
+        {"subtask": stage, "timestamp": row["timestamp"], "feature": "ee_pos", "value": row["ee_pos"]}
+        for row in view["subtasks"][0]["failure_samples"]
+    ]
+
+
+@pytest.mark.parametrize("speed", [0.0, 0.25, 0.5])
+def test_benign_motion_and_exact_speed_limit_abstain(cfg, speed):
+    assert predict(speed_view(speed=speed), cfg)["status"] == "abstain"
+
+
+def test_decimal_timestamps_and_position_offsets_do_not_turn_equality_into_speed_failure(cfg):
+    times = (0.1, 0.3, 0.5, 0.7, 0.9, 1.1, 1.3)
+    view = speed_view(times=times, positions=[0.7 + cfg.max_ee_speed_m_s * t for t in times])
+    assert predict(view, cfg)["status"] == "abstain"
+    # The numeric equality tolerance must not hide a real above-limit signal.
+    view = speed_view(times=times, positions=[0.7 + (cfg.max_ee_speed_m_s + 1e-8) * t for t in times])
+    assert predict(view, cfg)["predicted_failure_mode"] == "excessive_speed"
+
+
+def test_speed_uses_full_3d_distance(cfg):
+    view = speed_view(speed=0.0)
+    for row in view["subtasks"][0]["failure_samples"]:
+        row["ee_pos"][2] = 0.2 + 0.75 * row["timestamp"]
+        row["obj_pos"][2] = row["ee_pos"][2] - 0.05
+    assert predict(view, cfg)["predicted_failure_mode"] == "excessive_speed"
+
+
+def test_short_stage_or_single_interval_cannot_establish_persistent_speed(cfg):
+    assert predict(speed_view(times=(0.0, 0.125, 0.25)), cfg)["status"] == "abstain"
+    assert predict(speed_view(times=(0.0, 2.0)), cfg)["status"] == "abstain"
+    assert predict(speed_view(times=(0.0,)), cfg)["status"] == "abstain"
+
+
+def test_compressed_uneven_intervals_use_elapsed_seconds(cfg):
+    view = speed_view(TRANSPORT, times=(0.0, 0.75, 2.25))
+    rec = predict(view, cfg)
+    assert rec["predicted_failure_mode"] == "excessive_speed"
+    assert "0.750 m/s" in rec["explanation"]
+    assert "2.25 s" in rec["explanation"]
+    # The same displacements spread over longer times are ordinary motion.
+    for row in view["subtasks"][0]["failure_samples"]:
+        row["timestamp"] *= 4
+    assert predict(view, cfg)["status"] == "abstain"
+
+
+def test_speed_persistence_includes_exact_duration_boundary(cfg):
+    rec = predict(speed_view(times=(0.0, 0.25, 0.5)), cfg)
+    assert rec["predicted_failure_mode"] == "excessive_speed"
+    # Decimal subtraction represents this exact half-second as slightly less
+    # than 0.5; persistence uses the same narrow numeric equality policy.
+    rec = predict(speed_view(times=(0.2, 0.45, 0.7)), cfg)
+    assert rec["predicted_failure_mode"] == "excessive_speed"
+
+
+def test_one_sample_position_spike_and_return_are_ignored(cfg):
+    view = speed_view(times=(0.0, 0.5, 1.0, 1.5), positions=[0.0, 1.0, 0.0, 0.0])
+    assert predict(view, cfg)["status"] == "abstain"
+
+
+def test_below_limit_interval_breaks_speed_persistence(cfg):
+    view = speed_view(times=(0.0, 0.5, 1.0, 1.5), positions=[0.0, 0.75, 0.75, 1.5])
+    assert predict(view, cfg)["status"] == "abstain"
+
+
+def test_speed_run_can_recover_after_noise_or_benign_motion(cfg):
+    view = speed_view(
+        times=(0.0, 0.5, 1.0, 1.5, 2.0, 2.5), positions=[0.0, 1.0, 0.0, 0.0, 0.5, 1.0],
+    )
+    rec = predict(view, cfg)
+    assert rec["predicted_failure_mode"] == "excessive_speed"
+    assert rec["evidence"][0]["timestamp"] == 1.5
+
+
+def test_speed_runs_do_not_bridge_stage_boundaries_or_unobserved_nodes(cfg):
+    view = build_view(
+        {"maintain_grasp": [0.0, 0.5], "move_along_path": [], "reach_target": [1.0, 1.5]},
+        TRANSPORT, closed_from=0.0, ee=lambda t, s: [t, 0.0, 0.2],
+    )
+    assert predict(view, cfg)["status"] == "abstain"
+
+
+def test_speed_stage_and_limit_configuration_are_respected(cfg):
+    view = speed_view()
+    assert predict(view, RuleConfig(max_ee_speed_m_s=1.0))["status"] == "abstain"
+    assert predict(view, RuleConfig(speed_stages=("approach",)))["status"] == "abstain"
+    assert predict(view, RuleConfig(speed_min_intervals=3))["status"] == "abstain"
+    assert predict(view, RuleConfig(speed_persist_s=1.5))["status"] == "abstain"
+
+
+def test_object_or_joint_velocity_alone_does_not_imply_excessive_ee_speed(cfg):
+    view = speed_view(speed=0.0)
+    for row in view["subtasks"][0]["failure_samples"]:
+        row["obj_vel"] = [100.0, 0.0, 0.0]  # a drop is not evidence of fast EE motion
+        row["joint_velocities"] = [100.0] * 6  # angular values cannot use an m/s limit
+    assert predict(view, cfg)["status"] == "abstain"
+
+
+def test_speed_prediction_ignores_unobserved_reference_channels(cfg):
+    view = speed_view()
+    expected = predict(view, cfg)
+    for row in view["subtasks"][0]["failure_samples"]:
+        row["desired_ee_pos"] = [0.0, 0.0, 0.0]
+        row["commanded_speed"] = 0.0
+    assert predict(view, cfg) == expected
+    view["subtasks"][0]["failure_samples"][0]["perturbation_value"] = 4.0
+    with pytest.raises(ValueError, match="failure-only"):
+        predict(view, cfg)
+
+
+@pytest.mark.parametrize(
+    "channels",
+    [
+        {"force": lambda t, s: 3.0},
+        {"state": lambda t, s: 1.0 if t == 0 else 0.0},
+    ],
+)
+def test_speed_with_another_failure_in_same_stage_abstains(cfg, channels):
+    rec = predict(speed_view(**channels), cfg)
+    assert rec["status"] == "abstain"
+    assert "ambiguous" in rec["explanation"] and "excessive_speed" in rec["explanation"]
+
+
+def test_earlier_failure_still_wins_over_later_speed(cfg):
+    view = build_view(
+        force=lambda t, s: 3.0 if t >= 4.4 else 0.2,
+        ee=lambda t, s: [0.4, 0.0, 0.1 + (t - 6.0)] if s == "lift" else default_ee(t, s),
+    )
+    rec = predict(view, cfg)
+    assert (rec["predicted_failure_mode"], rec["predicted_subtask"]) == (
+        "inadequate_grip_strength", "grasp",
+    )
+
+
+def test_speed_competes_with_position_in_approach(cfg):
+    view = build_view(
+        {"approach": [0.0, 0.5, 1.0]},
+        ee=lambda t, s: [0.75 * t, 0.0, 0.2],
+    )
+    rec = predict(view, cfg)
+    assert rec["status"] == "abstain"
+    assert "position_error" in rec["explanation"] and "excessive_speed" in rec["explanation"]
 
 
 # --------------------------------------------------------------------------- #

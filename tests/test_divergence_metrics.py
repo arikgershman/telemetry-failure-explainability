@@ -100,3 +100,56 @@ def test_config_complete_and_loads():
     assert set(config.thresholds) == set(TelemetryFeature)
     with pytest.raises(ValueError, match="missing"):
         DivergenceConfig(thresholds={TelemetryFeature.GRIPPER_FORCE: 2.0})
+
+
+@pytest.mark.parametrize("feature,offset", [
+    (TelemetryFeature.GRIPPER_FORCE, 3.0),
+    (TelemetryFeature.CONTACT_FORCE, -4.0),
+    (TelemetryFeature.JOINT_POSITIONS, [0.0, -0.3, 0.2, 0.0, 0.1, 0.0]),
+    (TelemetryFeature.EE_POS, [0.01, -0.04, 0.02]),
+])
+def test_metric_constant_scalar_and_vector_offsets(feature, offset):
+    node = fixture_tree().subtasks[0]
+    node.failure_samples = [row.model_copy(deep=True) for row in node.success_samples]
+    node.failure_segment_end = "transitioned"
+    for row in node.failure_samples:
+        value = getattr(row, feature.value)
+        setattr(row, feature.value, ([a + b for a, b in zip(value, offset)]
+                                   if isinstance(offset, list) else value + offset))
+    expected = max(map(abs, offset)) if isinstance(offset, list) else abs(offset)
+    config = DivergenceConfig(thresholds={f: expected / 2 if f == feature else 1e9
+                                        for f in TelemetryFeature})
+    result = compute_subtask_divergence(node, config)
+    assert result.max_abs_deltas[feature] == pytest.approx(expected)
+    assert result.first_divergence_timestamp == node.failure_samples[0].timestamp
+    assert all(value == pytest.approx(0.0) for key, value in result.max_abs_deltas.items() if key != feature)
+
+
+@pytest.mark.parametrize("segment_end", ["transitioned", "trace_end"])
+def test_metric_shifted_resampled_analytic_motion(segment_end):
+    from test_divergence import node, observation
+
+    success = [observation(2 + t, value=2 * t) for t in (0, 0.5, 2)]
+    failure = [observation(10 + t, value=2 * t) for t in (0, 0.2, 0.8, 1.4, 2)]
+    pair = node(success, failure, segment_end=segment_end)
+    config = DivergenceConfig(thresholds={f: 1e-10 for f in TelemetryFeature})
+    before = pair.model_dump_json()
+    result = compute_subtask_divergence(pair, config)
+    assert result.first_divergence_timestamp is None
+    assert all(value == pytest.approx(0.0, abs=1e-12) for value in result.max_abs_deltas.values())
+    assert pair.model_dump_json() == before
+
+
+def test_metric_opposite_quaternion_signs_are_same_rotation():
+    from test_divergence import node, observation
+    import numpy as np
+
+    success = [observation(t, quaternion=[float(np.cos(t / 4)), 0, 0, float(np.sin(t / 4))])
+               for t in (0, 2)]
+    failure = [observation(10 + t, quaternion=[float(-np.cos(t / 4)), 0, 0, float(-np.sin(t / 4))])
+               for t in (0, 0.4, 0.8, 2)]
+    config = DivergenceConfig(thresholds={f: 1e-10 for f in TelemetryFeature})
+    result = compute_subtask_divergence(node(success, failure), config)
+    assert result.first_divergence_timestamp is None
+    assert result.max_abs_deltas[TelemetryFeature.EE_QUAT] == pytest.approx(0, abs=1e-14)
+    assert result.max_abs_deltas[TelemetryFeature.OBJ_QUAT] == pytest.approx(0, abs=1e-14)

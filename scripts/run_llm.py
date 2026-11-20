@@ -121,6 +121,7 @@ def implementation_provenance(prompt_dir: Path | None) -> dict[str, Any]:
         Path(__file__).resolve(),
         ROOT / "src/telemetry_reasoning/models/llm.py",
         ROOT / "src/telemetry_reasoning/models/prompts.py",
+        ROOT / "src/telemetry_reasoning/models/constrained.py",
         ROOT / "src/telemetry_reasoning/schemas.py",
         ROOT / "src/telemetry_reasoning/eval/contracts.py",
     )
@@ -265,6 +266,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=ROOT / "configs/llm.yaml")
     parser.add_argument("--variants", nargs="+", choices=VARIANTS, default=list(VARIANTS[:2]))
     parser.add_argument("--backend", choices=("stub", "hf"), default="stub")
+    parser.add_argument(
+        "--stub-tokenizer-dir", type=Path,
+        help="For stub only: count exact prompts with the pinned local CPU tokenizer; opens no model weights",
+    )
     parser.add_argument("--output-dir", type=Path, help="fresh or empty destination directory")
     parser.add_argument(
         "--check-access", action="store_true",
@@ -274,6 +279,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         config_bytes = args.config.read_bytes()
         config = load_llm_config(args.config)
+        if args.stub_tokenizer_dir is not None and args.backend != "stub":
+            raise ValueError("--stub-tokenizer-dir is available only with --backend stub")
         if args.check_access:
             print(json.dumps(capabilities(config), indent=2, allow_nan=False))
             return 0
@@ -284,7 +291,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         _validate_output(args.output_dir)
         trees, input_files = load_inputs(args.bt_dir)
         implementation = implementation_provenance(config.prompt_dir)
-        backend = StubBackend(config) if args.backend == "stub" else HFBackend(config)
+        if args.stub_tokenizer_dir is not None:
+            from telemetry_reasoning.experiments import TokenizerStubBackend
+            backend = TokenizerStubBackend(config, args.stub_tokenizer_dir)
+        else:
+            backend = StubBackend(config) if args.backend == "stub" else HFBackend(config)
         result = run_inference(trees, args.variants, config, backend=backend)
         manifest = dict(result.manifest)
         manifest.update({

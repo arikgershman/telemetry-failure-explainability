@@ -10,6 +10,8 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -37,6 +39,11 @@ from telemetry_reasoning.eval.plots import (
     save_figure,
     trace_from_rows,
 )
+from telemetry_reasoning.config import CompressionConfig
+from telemetry_reasoning.io import write_metadata_csv, write_telemetry_csv
+from telemetry_reasoning.parser import build_paired_bt
+from telemetry_reasoning.parser.divergence_metrics import enrich_paired_bt, load_divergence_config
+from telemetry_reasoning.schemas import TASK_SUBTASKS, MetadataRow, PairedBehaviorTree, RawTelemetryRow, Task
 
 ROOT = Path(__file__).resolve().parents[1]
 STAGE_BOUNDS = [("approach", 0.0), ("align", 2.0), ("grasp", 4.0), ("lift", 6.0)]
@@ -232,7 +239,7 @@ def test_divergence_panel_shows_computed_values_per_subtask(traces):
     widths = [p.get_width() for p in bars(ax)]
     assert widths == pytest.approx([2.0, 2.0, 2.0, 1.98])  # each bar spans its subtask
     assert "gripper_force" in ax.get_ylabel() and "(N)" in ax.get_ylabel()
-    assert not ax.texts
+    assert [t.get_text() for t in ax.texts] == ["0 (computed)", "0 (computed)"]
 
 
 def test_null_divergence_is_labelled_not_computed_and_never_drawn_as_zero(traces):
@@ -246,6 +253,111 @@ def test_divergence_feature_absent_from_a_node_draws_no_bar_for_it(traces):
     bt = make_bt("computed")
     ax = plot_pair_telemetry(*traces, bt=bt, divergence_feature="obj_vel").axes[-1]
     assert bars(ax) == []  # no obj_vel deltas anywhere: nothing invented
+    assert len(ax.texts) == 4 and all("feature unavailable" in t.get_text() for t in ax.texts)
+
+
+def test_mixed_uncomputed_and_computed_zero_stages_are_distinguishable(traces):
+    bt = make_bt("computed")
+    bt["subtasks"][1]["deterministic_divergence"] = None
+    ax = plot_pair_telemetry(*traces, bt=bt).axes[-1]
+    assert {p.get_x(): p.get_height() for p in bars(ax)} == {0.0: 0.0, 4.0: 12.0, 6.0: 12.0}
+    assert any("align:" in t.get_text() and "not computed" in t.get_text() for t in ax.texts)
+    assert sum(t.get_text() == "0 (computed)" for t in ax.texts) == 1
+
+
+def partial_pair(tmp_path, task, prefix_length, *, final_samples=3, computed=False):
+    """Actual schema-valid raw CSVs and BT, ending inside the final observed stage."""
+    stages = TASK_SUBTASKS[task]
+    rows = []
+    for stage in stages:
+        for _ in range(9):
+            rows.append(RawTelemetryRow(
+                timestamp=round(len(rows) * 0.02, 8), subtask=stage,
+                joint_positions=[0.0] * 6, joint_velocities=[0.0] * 6,
+                joint_torques=[0.0] * 6, gripper_state=1.0, gripper_force=10.0,
+                ee_pos=[0.0, 0.0, 0.2], ee_quat=[1.0, 0.0, 0.0, 0.0],
+                obj_pos=[0.0, 0.0, 0.15], obj_quat=[1.0, 0.0, 0.0, 0.0],
+                obj_vel=[0.0, 0.0, 0.0], contact_force=10.0,
+            ))
+    metadata = MetadataRow(
+        pair_id="partial", task=task, success_file="success.csv", failure_file="failure.csv",
+        failed_subtask=stages[0], failure_mode="position_error", perturbation_param="offset_m",
+        perturbation_value=0.1, seed=723,
+    )
+    failure = rows[:(prefix_length - 1) * 9 + final_samples]
+    write_telemetry_csv(tmp_path / metadata.success_file, rows)
+    write_telemetry_csv(tmp_path / metadata.failure_file, failure)
+    write_metadata_csv(tmp_path / "metadata.csv", [metadata])
+    tree = build_paired_bt(metadata, tmp_path, CompressionConfig(k_uniform_samples=1))
+    if computed:
+        tree = enrich_paired_bt(tree, load_divergence_config(ROOT / "configs/divergence.yaml"))
+    assert PairedBehaviorTree.model_validate_json(tree.model_dump_json()) == tree
+    return rows, failure, tree
+
+
+@pytest.mark.parametrize("task,length", [
+    (task, length) for task in Task for length in range(1, len(TASK_SUBTASKS[task]) + 1)
+])
+@pytest.mark.parametrize("computed", [False, True])
+def test_every_valid_failure_prefix_plots_only_observed_markers_and_comparisons(tmp_path, task, length, computed):
+    success, failure, tree = partial_pair(tmp_path, task, length, computed=computed)
+    fig = plot_pair_telemetry(trace_from_rows(success), trace_from_rows(failure), bt=tree.model_dump(mode="json"))
+    top, div_ax = fig.axes[0], fig.axes[-1]
+    retained = [row for node in tree.subtasks for row in node.failure_samples]
+    (markers,) = lines_labelled(top, "failure retained samples")
+    np.testing.assert_array_equal(markers.get_xdata(), [row.timestamp for row in retained])
+    assert max(markers.get_xdata()) == failure[-1].timestamp
+    (raw_failure,) = lines_labelled(top, "failure: gripper force")
+    np.testing.assert_array_equal(raw_failure.get_xdata(), [row.timestamp for row in failure])
+    # Zero comparisons are legitimate only for observed stages. Missing suffix
+    # nodes have neither bars nor numerical zeros nor first-divergence events.
+    assert len(bars(div_ax)) == (length if computed else 0)
+    assert sum(t.get_text() == "0 (computed)" for t in div_ax.texts) == (length if computed else 0)
+    assert all(p.get_x() + p.get_width() <= failure[-1].timestamp for p in bars(div_ax))
+    assert not any(ln.get_color() == C_DIVERGENCE for ax in fig.axes for ln in ax.lines)
+    notices = [t.get_text() for t in div_ax.texts if "not observed" in t.get_text()]
+    unobserved = [node.subtask.value for node in tree.subtasks[length:]]
+    assert bool(notices) == bool(unobserved)
+    if unobserved:
+        assert "not comparable" in notices[0]
+        assert all(name in notices[0] for name in unobserved)
+    assert sum("not computed" in t.get_text() for t in div_ax.texts) == (0 if computed else length)
+
+
+@pytest.mark.parametrize("task", list(Task))
+def test_single_observation_has_a_point_comparison_without_invented_time_span(tmp_path, task):
+    success, failure, tree = partial_pair(tmp_path, task, 1, final_samples=1, computed=True)
+    fig = plot_pair_telemetry(trace_from_rows(success), trace_from_rows(failure), bt=tree.model_dump(mode="json"))
+    ax = fig.axes[-1]
+    assert bars(ax) == []
+    (point,) = [ln for ln in ax.lines if ln.get_label().startswith("single-sample comparison")]
+    np.testing.assert_array_equal(point.get_xdata(), [failure[0].timestamp])
+    np.testing.assert_array_equal(point.get_ydata(), [0.0])
+    assert point.get_linestyle() == "None"
+    assert sum(t.get_text() == "0 (computed)" for t in ax.texts) == 1
+    assert not any(ln.get_label() == "first divergence (computed)" for ln in ax.lines)
+
+
+@pytest.mark.parametrize("task", list(Task))
+@pytest.mark.parametrize("computed", [False, True])
+def test_public_plot_cli_accepts_actual_partial_failure_csv_and_schema_bt(tmp_path, task, computed):
+    _, failure, tree = partial_pair(tmp_path, task, 1, computed=computed)
+    assert tree.subtasks[1].failure_samples == []
+    assert tree.subtasks[0].failure_samples[-1].timestamp == failure[-1].timestamp
+    bt_dir = tmp_path / "bt"
+    bt_dir.mkdir()
+    (bt_dir / "pair_partial_bt.json").write_text(tree.model_dump_json(indent=2))
+    output = tmp_path / "plots"
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/plot_telemetry.py"), "--data-dir", str(tmp_path),
+         "--bt-dir", str(bt_dir), "--output-dir", str(output)],
+        cwd=ROOT, capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Traceback" not in result.stderr
+    png = output / "telemetry_partial.png"
+    assert png.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert png.stat().st_size > 5_000
 
 
 def test_custom_panels_and_synthetic_note(traces):

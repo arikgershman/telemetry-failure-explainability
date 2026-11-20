@@ -11,7 +11,9 @@ Telemetry figure, top to bottom
       * subtask boundaries (failure run dashed, success run dotted when different)
       * injection time (manifest), predicted onset, and first divergence (computed),
         each with its own colour *and* line style, since they are different events
-Divergence ``null`` means *not computed* and is shown as such, never as zero.
+Observed-stage divergence ``null`` means *not computed*. Unobserved failure
+stages are not comparable and have no failure time span. Neither is shown as
+zero; computed-zero comparisons are explicitly labelled.
 """
 
 from __future__ import annotations
@@ -141,21 +143,34 @@ DEFAULT_PANELS: tuple[PanelSpec, ...] = (
 
 
 def _divergence_nodes(bt: Optional[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Per-subtask (start, end, divergence) from a ``model_dump`` of a PairedBehaviorTree."""
+    """Keep coverage separate from values; never infer missing failure spans.
+
+    A later observed stage supplies the preceding stage's transition boundary.
+    The final observed stage ends at its last retained failure sample, including
+    when that stage or the entire failure trace contains just one sample.
+    Success timestamps cannot locate an unobserved failure stage.
+    """
     if not bt:
         return []
     nodes = []
     subtasks = bt.get("subtasks", [])
-    starts = [min(float(r["timestamp"]) for r in n["failure_samples"]) for n in subtasks]
-    ends = [max(float(r["timestamp"]) for r in n["failure_samples"]) for n in subtasks]
+    starts = [min((float(r["timestamp"]) for r in n["failure_samples"]), default=None)
+              for n in subtasks]
+    ends = [max((float(r["timestamp"]) for r in n["failure_samples"]), default=None)
+            for n in subtasks]
     for i, node in enumerate(subtasks):
-        end = starts[i + 1] if i + 1 < len(subtasks) else ends[i]
+        observed = starts[i] is not None
+        end = (starts[i + 1] if observed and i + 1 < len(subtasks) and starts[i + 1] is not None
+               else ends[i])
+        divergence = node.get("deterministic_divergence") if observed else None
         nodes.append(
             {
                 "subtask": str(getattr(node["subtask"], "value", node["subtask"])),
                 "start": starts[i],
                 "end": end,
-                "divergence": node.get("deterministic_divergence"),
+                "divergence": divergence,
+                "status": ("not_comparable" if not observed else
+                           "computed" if divergence is not None else "uncomputed"),
             }
         )
     return nodes
@@ -191,8 +206,10 @@ def plot_pair_telemetry(
     """
     success_ret = failure_ret = None
     if bt:
-        success_ret = trace_from_rows([r for n in bt["subtasks"] for r in n["success_samples"]])
-        failure_ret = trace_from_rows([r for n in bt["subtasks"] for r in n["failure_samples"]])
+        success_rows = [r for n in bt["subtasks"] for r in n["success_samples"]]
+        failure_rows = [r for n in bt["subtasks"] for r in n["failure_samples"]]
+        success_ret = trace_from_rows(success_rows) if success_rows else None
+        failure_ret = trace_from_rows(failure_rows) if failure_rows else None
     nodes = _divergence_nodes(bt)
 
     fig = Figure(figsize=(11, 2.3 * (len(panels) + 1) + 1.4), constrained_layout=True)
@@ -248,25 +265,49 @@ def plot_pair_telemetry(
 
     # subtask names above the top panel
     for name, a, b in f_spans:
-        top.text((a + b) / 2, 1.02, name, transform=top.get_xaxis_transform(), ha="center", va="bottom", fontsize=8)
+        top.text((a + b) / 2, 1.10, name, transform=top.get_xaxis_transform(), ha="center", va="bottom", fontsize=8)
 
     div_ax = axes[-1]
     decorate(div_ax, first=False)
     unit = FEATURE_UNITS.get(divergence_feature, "")
     div_ax.set_ylabel(f"max |Δ| {divergence_feature}\n({unit})")
     div_ax.set_title("Deterministic divergence per subtask (success vs failure)", loc="left", fontsize=9)
-    computed = [n for n in nodes if n["divergence"] is not None]
+    unavailable = [n["subtask"] for n in nodes if n["status"] == "not_comparable"]
     if not nodes:
         div_ax.text(0.5, 0.5, "no behavior tree supplied", transform=div_ax.transAxes, ha="center", va="center", color="0.4")
-    elif not computed:
-        div_ax.text(0.5, 0.5, "divergence not computed (null, not zero)", transform=div_ax.transAxes,
-                    ha="center", va="center", color="0.4")
-    for n in computed:
+    if unavailable:
+        # An axes-coordinate notice describes missing coverage without placing
+        # a fabricated failure stage at the success run's timestamps.
+        div_ax.text(
+            0.99, 0.98, "Failure stages not observed (not comparable):\n" + ", ".join(unavailable),
+            transform=div_ax.transAxes, ha="right", va="top", fontsize=8, color="0.35",
+            bbox={"facecolor": "white", "edgecolor": "0.8", "alpha": 0.9},
+        )
+    for n in nodes:
+        if n["status"] == "not_comparable":
+            continue
+        center = (n["start"] + n["end"]) / 2
+        if n["status"] == "uncomputed":
+            div_ax.text(center, 0.45, f"{n['subtask']}:\nnot computed (null)",
+                        transform=div_ax.get_xaxis_transform(), ha="center", va="center", fontsize=8, color="0.4")
+            continue
         height = _delta_for(n["divergence"], divergence_feature)
-        if height is not None:
-            div_ax.bar(n["start"], height, width=max(n["end"] - n["start"], 1e-6), align="edge",
+        if height is None:
+            div_ax.text(center, 0.45, f"{n['subtask']}:\nfeature unavailable",
+                        transform=div_ax.get_xaxis_transform(), ha="center", va="center", fontsize=8, color="0.4")
+        elif n["end"] > n["start"]:
+            div_ax.bar(n["start"], height, width=n["end"] - n["start"], align="edge",
                        color=C_DIVERGENCE, alpha=0.6, edgecolor="0.3", label=f"max |Δ| ({n['subtask']})")
+        else:
+            # One observed timestamp establishes a comparison value, not a
+            # positive-duration stage. A point preserves that distinction.
+            div_ax.plot([n["start"]], [height], ls="none", marker="o", ms=4,
+                        color=C_DIVERGENCE, label=f"single-sample comparison ({n['subtask']})")
+        if height == 0.0:
+            div_ax.annotate("0 (computed)", (center, 0.0), xytext=(0, 4), textcoords="offset points",
+                            ha="center", va="bottom", fontsize=7, color="0.35")
     div_ax.set_xlabel("Time (s)")
+    div_ax.set_ylim(bottom=0.0)  # absolute deltas cannot be negative, including computed-zero plots
     div_ax.grid(alpha=0.25)
 
     # one figure-level legend for everything that is not a data series
