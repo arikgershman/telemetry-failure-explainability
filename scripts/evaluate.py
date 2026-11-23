@@ -14,7 +14,10 @@ Ground truth comes from ``metadata.csv`` only (``MetadataRow``). Optional inputs
     --split NAME        score only pairs assigned to this split (needs --manifest)
     --variants V [V..]  score exactly these variants (default: those present, plus
                         ``expected_variants`` from the config)
-    --run-manifest F..  sibling run-manifest JSONs; embedded in metrics.json
+    --run-manifest F..  sibling run-manifest JSONs (Baseline 1's ``*.manifest.json``
+                        and/or Track 5's ``run_manifest.json``); embedded in
+                        metrics.json with per-variant runtime/token totals. One run
+                        per variant: two manifests for the same variant are rejected.
 
 Writes ``metrics.json``, ``metrics.csv``, ``confusion.csv``, a blinded human
 rubric (``rubric_blinded.csv`` + ``rubric_key.json``) and PNG plots. Duplicate
@@ -46,6 +49,8 @@ from telemetry_reasoning.eval.metrics import (
     load_eval_config,
     load_manifest,
     metrics_rows,
+    run_manifest_provenance,
+    summarize_run_manifests,
     truth_from_rows,
 )
 from telemetry_reasoning.eval.plots import plot_confusion_matrix, plot_variant_comparison, save_figure
@@ -61,7 +66,8 @@ def _read_metadata(path: Path) -> Any:
 def _load_failure_view(path: Path) -> dict[str, Any]:
     from telemetry_reasoning.schemas import PairedBehaviorTree
 
-    return PairedBehaviorTree.model_validate_json(path.read_text()).to_failure_only().model_dump(mode="json")
+    # ``to_failure_only()`` already returns a JSON-ready dict, not a model.
+    return PairedBehaviorTree.model_validate_json(path.read_text()).to_failure_only()
 
 
 def load_views(bt_dir: Path, truth: Sequence[TruthRecord]) -> dict[str, dict[str, Any]]:
@@ -82,11 +88,13 @@ def _write_csv(path: Path, rows: Sequence[dict[str, Any]], columns: Optional[Seq
         writer.writerows(rows)
 
 
-def _load_run_manifests(paths: Sequence[Path]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
+def _read_run_manifests(paths: Sequence[Path]) -> list[tuple[str, dict[str, Any]]]:
+    out: list[tuple[str, dict[str, Any]]] = []
     for p in paths:
         data = json.loads(p.read_text())
-        out[str(data.get("model_variant", p.stem))] = data
+        if not isinstance(data, dict):
+            raise ContractError(f"{p}: run manifest must be a JSON object")
+        out.append((str(p), data))
     return out
 
 
@@ -118,6 +126,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             truth = [t for t in truth_all if manifest.splits[t.pair_id] == args.split]
 
         indexed = index_predictions(read_predictions(*args.predictions), {t.pair_id for t in truth_all})
+        run_manifests = _read_run_manifests(args.run_manifest)
+        provenance = run_manifest_provenance(run_manifests)
+        resources = summarize_run_manifests(run_manifests, in_scope_pairs={t.pair_id for t in truth})
     except (ContractError, ValueError, FileNotFoundError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -128,9 +139,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         variants=args.variants,
         views=views,
         injection_times=manifest.injection_times if manifest else None,
+        resources=resources,
     )
     result["split"] = args.split
-    result["run_manifests"] = _load_run_manifests(args.run_manifest)
+    result["run_manifests"] = provenance
 
     out = args.output_dir
     out.mkdir(parents=True, exist_ok=True)
