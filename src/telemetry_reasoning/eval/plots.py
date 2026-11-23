@@ -12,6 +12,10 @@ Telemetry figure, top to bottom
       * injection time (manifest), predicted onset, and first divergence (computed),
         each with its own colour *and* line style, since they are different events
 Divergence ``null`` means *not computed* and is shown as such, never as zero.
+
+Real failure traces end early. Subtasks with no observed failure samples are
+*not observed / not comparable*: they get a hatched band from the end of the
+failure trace (never a bar, never a zero) and are named above the top panel.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ import numpy as np
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 
 from telemetry_reasoning.eval.contracts import FEATURE_SHAPES
 
@@ -141,21 +146,38 @@ DEFAULT_PANELS: tuple[PanelSpec, ...] = (
 
 
 def _divergence_nodes(bt: Optional[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Per-subtask (start, end, divergence) from a ``model_dump`` of a PairedBehaviorTree."""
+    """Per-subtask window and divergence from a ``model_dump`` of a PairedBehaviorTree.
+
+    Each entry has ``subtask``, ``observed``, ``start``, ``end``, ``divergence``
+    and ``status``. A node is observed exactly when it has failure samples; an
+    unobserved node (the suffix of an early-terminated failure) has ``start`` and
+    ``end`` of ``None`` and is never given a divergence value.
+    """
     if not bt:
         return []
-    nodes = []
     subtasks = bt.get("subtasks", [])
-    starts = [min(float(r["timestamp"]) for r in n["failure_samples"]) for n in subtasks]
-    ends = [max(float(r["timestamp"]) for r in n["failure_samples"]) for n in subtasks]
+    spans: dict[int, tuple[float, float]] = {}
     for i, node in enumerate(subtasks):
-        end = starts[i + 1] if i + 1 < len(subtasks) else ends[i]
+        stamps = [float(r["timestamp"]) for r in node.get("failure_samples") or []]
+        if stamps:
+            spans[i] = (min(stamps), max(stamps))
+    nodes = []
+    for i, node in enumerate(subtasks):
+        name = str(getattr(node["subtask"], "value", node["subtask"]))
+        status = node.get("divergence_status")
+        if i not in spans:
+            nodes.append({"subtask": name, "observed": False, "start": None, "end": None,
+                          "divergence": None, "status": status or "not_comparable"})
+            continue
+        later = [spans[j][0] for j in spans if j > i]
         nodes.append(
             {
-                "subtask": str(getattr(node["subtask"], "value", node["subtask"])),
-                "start": starts[i],
-                "end": end,
+                "subtask": name,
+                "observed": True,
+                "start": spans[i][0],
+                "end": later[0] if later else spans[i][1],
                 "divergence": node.get("deterministic_divergence"),
+                "status": status,
             }
         )
     return nodes
@@ -206,12 +228,18 @@ def plot_pair_telemetry(
     different = [b for b in s_bounds if all(abs(b - f) > 1e-9 for f in f_bounds)]
     first_div = [n["divergence"]["first_divergence_timestamp"] for n in nodes
                  if n["divergence"] and n["divergence"].get("first_divergence_timestamp") is not None]
+    unobserved = [n["subtask"] for n in nodes if not n["observed"]]
+    trace_end = float(failure.t[-1])
+    band_end = max(float(success.t[-1]), trace_end)
+    band = (trace_end, band_end) if unobserved and band_end - trace_end > 1e-9 else None
 
     def decorate(ax: Any, first: bool) -> None:
         """Bands, boundaries, and event markers shared by every panel."""
         for i, (_, a, b) in enumerate(f_spans):
             if i % 2 == 0:
                 ax.axvspan(a, b, color="0.5", alpha=0.07, lw=0)
+        if band is not None:
+            ax.axvspan(band[0], band[1], fill=False, hatch="///", edgecolor="0.55", lw=0, alpha=0.8)
         for k, b in enumerate(f_bounds):
             ax.axvline(b, color="0.35", ls="--", lw=0.8, label="subtask boundary (failure run)" if first and k == 0 else "_nolegend_")
         for k, b in enumerate(different):
@@ -250,17 +278,30 @@ def plot_pair_telemetry(
     for name, a, b in f_spans:
         top.text((a + b) / 2, 1.02, name, transform=top.get_xaxis_transform(), ha="center", va="bottom", fontsize=8)
 
+    if unobserved:
+        centre = (trace_end + band_end) / 2 if band is not None else trace_end
+        top.text(centre, 1.02, f"{', '.join(unobserved)}\n(not observed)", transform=top.get_xaxis_transform(),
+                 ha="center", va="bottom", fontsize=8, color="0.4", style="italic")
+
     div_ax = axes[-1]
     decorate(div_ax, first=False)
     unit = FEATURE_UNITS.get(divergence_feature, "")
     div_ax.set_ylabel(f"max |Δ| {divergence_feature}\n({unit})")
     div_ax.set_title("Deterministic divergence per subtask (success vs failure)", loc="left", fontsize=9)
-    computed = [n for n in nodes if n["divergence"] is not None]
+    computed = [n for n in nodes if n["observed"] and n["divergence"] is not None]
+    if band is not None:
+        div_ax.text((band[0] + band[1]) / 2, 0.5, "not observed:\nnot comparable", transform=div_ax.get_xaxis_transform(),
+                    ha="center", va="center", color="0.35", fontsize=8, style="italic")
     if not nodes:
         div_ax.text(0.5, 0.5, "no behavior tree supplied", transform=div_ax.transAxes, ha="center", va="center", color="0.4")
     elif not computed:
         div_ax.text(0.5, 0.5, "divergence not computed (null, not zero)", transform=div_ax.transAxes,
                     ha="center", va="center", color="0.4")
+    else:  # some observed stages computed: say so for the ones that are not
+        for n in nodes:
+            if n["observed"] and n["divergence"] is None:
+                div_ax.text((n["start"] + n["end"]) / 2, 0.5, "not computed", transform=div_ax.get_xaxis_transform(),
+                            ha="center", va="center", color="0.4", fontsize=8)
     for n in computed:
         height = _delta_for(n["divergence"], divergence_feature)
         if height is not None:
@@ -277,6 +318,8 @@ def plot_pair_telemetry(
     if failure_ret is not None:
         extras.append(("failure retained samples",
                        Line2D([], [], ls="none", marker="o", mfc=C_FAILURE, mec=C_FAILURE, color=C_FAILURE)))
+    if band is not None:
+        extras.append(("failure trace ended (not observed)", Patch(fill=False, hatch="///", edgecolor="0.55")))
     shared = ("subtask boundary", "first divergence", "injection", "predicted onset")
     listed: set[str] = set()
     for line in top.lines:

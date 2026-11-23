@@ -39,11 +39,20 @@ TASK_SUBTASKS: Mapping[str, tuple[str, ...]] = {
     "transport_object": ("maintain_grasp", "move_along_path", "reach_target"),
 }
 SUBTASKS: tuple[str, ...] = tuple(s for subs in TASK_SUBTASKS.values() for s in subs)
+# Every shared ``FailureMode`` is a valid label, so a prediction of any of them
+# validates. ``excessive_speed`` is valid but has no accepted dataset examples
+# (insufficient failure reliability in calibration): the evaluator reports it as
+# an unsupported class and keeps it out of the observed-class macro average.
 FAILURE_MODES: tuple[str, ...] = (
     "position_error",
     "orientation_error",
     "inadequate_grip_strength",
     "early_gripper_release",
+    "excessive_speed",
+)
+UNSUPPORTED_FAILURE_MODES: tuple[str, ...] = ("excessive_speed",)
+DATASET_FAILURE_MODES: tuple[str, ...] = tuple(
+    mode for mode in FAILURE_MODES if mode not in UNSUPPORTED_FAILURE_MODES
 )
 MODEL_VARIANTS: tuple[str, ...] = ("baseline_1", "baseline_2", "baseline_3", "main")
 STATUSES: tuple[str, ...] = ("ok", "abstain", "error")

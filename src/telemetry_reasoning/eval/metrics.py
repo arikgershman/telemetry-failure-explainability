@@ -15,12 +15,20 @@ Definitions (per model variant, overall and per task)
                            and missing predictions, so they are "missed true
                            classes". Abstentions are not predictions, so they
                            are never false positives.
-    macro_f1               mean F1 over labels with support > 0
-    macro_f1_fixed_labels  mean F1 over all fixed labels; a label with no
+    macro_f1               mean F1 over dataset labels with support > 0
+    macro_f1_fixed_labels  mean F1 over all fixed dataset labels; a label with no
                            support and no predictions scores 0.0 (so absent
                            classes pull it down; prefer ``macro_f1`` on small sets)
+    unsupported classes    ``excessive_speed`` is a valid label with no accepted
+                           dataset examples. It keeps a per-class row (flagged
+                           ``unsupported``) and a confusion row/column, so a
+                           prediction of it is a false positive, but it is never
+                           part of either macro average.
     evidence               cited evidence is looked up in the failure-only
                            input and compared numerically within tolerance
+    resources              runtime/token/latency totals from sibling run manifests
+                           (``--run-manifest``); ``null`` when a run did not log them.
+                           Stub token counts are upper bounds, never tokenizer output.
     onset                  optional; needs a manifest injection timestamp AND a
                            defined prediction timestamp. Injection time,
                            observed divergence, and detection are different events.
@@ -34,15 +42,18 @@ import random
 import statistics
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Literal, Mapping, Optional, Sequence, Union
+from typing import Any, Collection, Iterable, Literal, Mapping, Optional, Sequence, Union
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from telemetry_reasoning.eval.contracts import (
+    DATASET_FAILURE_MODES,
     FAILURE_MODES,
+    MODEL_VARIANTS,
     TASK_SUBTASKS,
     TASKS,
+    UNSUPPORTED_FAILURE_MODES,
     ContractError,
     IndexedPredictions,
     InvalidLine,
@@ -234,6 +245,7 @@ def _slice_metrics(pairs: Sequence[tuple[TruthRecord, Outcome]]) -> dict[str, An
         tp = sum(1 for t, o in pairs if t.failure_mode == label and o.kind == "ok" and o.mode == label)
         fp, fn = predicted - tp, support - tp
         per_class[label] = {
+            "unsupported": label in UNSUPPORTED_FAILURE_MODES,
             "support": support,
             "predicted": predicted,
             "tp": tp,
@@ -242,10 +254,10 @@ def _slice_metrics(pairs: Sequence[tuple[TruthRecord, Outcome]]) -> dict[str, An
             "f1": _rate(2 * tp, 2 * tp + fp + fn),
         }
 
-    present = [lab for lab in FAILURE_MODES if per_class[lab]["support"] > 0]
+    present = [lab for lab in DATASET_FAILURE_MODES if per_class[lab]["support"] > 0]
     macro = statistics.fmean(per_class[lab]["f1"] for lab in present) if present else None
     macro_fixed = (
-        statistics.fmean((per_class[lab]["f1"] or 0.0) for lab in FAILURE_MODES) if n else None
+        statistics.fmean((per_class[lab]["f1"] or 0.0) for lab in DATASET_FAILURE_MODES) if n else None
     )
 
     columns = list(FAILURE_MODES) + list(NON_PREDICTION_COLUMNS)
@@ -272,6 +284,7 @@ def _slice_metrics(pairs: Sequence[tuple[TruthRecord, Outcome]]) -> dict[str, An
         "macro_f1": macro,
         "macro_f1_fixed_labels": macro_fixed,
         "labels_absent": [lab for lab in FAILURE_MODES if per_class[lab]["support"] == 0],
+        "unsupported_labels": list(UNSUPPORTED_FAILURE_MODES),
         "per_class": per_class,
         "confusion": {"labels": list(FAILURE_MODES), "columns": columns, "matrix": matrix},
     }
@@ -421,6 +434,182 @@ def _onset_report(
 
 
 # --------------------------------------------------------------------------- #
+# Run manifests: provenance and resource usage
+# --------------------------------------------------------------------------- #
+# Two sibling-manifest layouts are understood:
+#   * single-variant (Baseline 1, ``scripts/run_baseline.py``): ``model_variant``,
+#     ``backend``, ``n_inputs``, ``runtime_s`` (whole-run wall time, no per-pair data)
+#   * multi-variant (Track 5, ``scripts/run_llm.py``): ``variants`` plus one entry per
+#     request in ``requests`` with ``pair_id``, ``model_variant``, ``input_tokens``,
+#     ``output_tokens``, ``token_count_method`` and ``latency_s``. Its top-level
+#     ``runtime_s`` covers every variant together, so it is reported as a shared run
+#     time and never split across variants.
+# Anything absent stays ``None``; nothing is estimated here.
+_SHARED_RUN_KEYS = (
+    "schema_version", "created_utc", "backend", "synthetic", "evaluation_note", "model",
+    "tokenizer", "decoding", "config_sha256", "response_policy", "runtime_s", "status_counts",
+    "n_inputs", "variants", "backend_provenance", "execution", "acceptance",
+)
+
+ManifestSource = tuple[str, Mapping[str, Any]]  # (source path/name, parsed JSON)
+
+
+def _count(value: Any) -> Optional[int]:
+    """A non-negative whole number, else ``None`` (bools and non-finite values are rejected)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return int(value) if value >= 0 and float(value).is_integer() else None
+
+
+def _seconds(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        return None
+    return float(value)
+
+
+def _manifest_variants(source: str, manifest: Mapping[str, Any]) -> tuple[str, list[str]]:
+    """Return ``(layout, variants)`` where layout is ``single`` or ``multi``."""
+    if isinstance(manifest.get("requests"), list):
+        names = manifest.get("variants")
+        if not isinstance(names, list) or not names:
+            names = sorted({r.get("model_variant") for r in manifest["requests"] if isinstance(r, Mapping)})
+        layout = "multi"
+    elif "model_variant" in manifest:
+        names, layout = [manifest["model_variant"]], "single"
+    else:
+        raise ContractError(
+            f"{source}: unrecognized run manifest (expected 'model_variant' or a 'requests' list)"
+        )
+    bad = [n for n in names if n not in MODEL_VARIANTS]
+    if bad or not names:
+        raise ContractError(f"{source}: run manifest names unknown model variant(s): {bad or names}")
+    return layout, list(names)
+
+
+def _claim(claimed: dict[str, str], variant: str, source: str) -> None:
+    if variant in claimed:
+        raise ContractError(
+            f"run manifests {claimed[variant]} and {source} both describe variant {variant!r}; "
+            "evaluate one run per variant (keep real and stub runs apart)"
+        )
+    claimed[variant] = source
+
+
+def run_manifest_provenance(manifests: Sequence[ManifestSource]) -> dict[str, dict[str, Any]]:
+    """Provenance per variant for ``metrics.json``.
+
+    A single-variant manifest is embedded whole. A multi-variant manifest is
+    reduced to its shared run-level fields (its per-request list belongs to
+    ``summarize_run_manifests``), so one run shared by three variants does not
+    triple the report. Two manifests for the same variant raise ``ContractError``.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    claimed: dict[str, str] = {}
+    for source, manifest in manifests:
+        layout, variants = _manifest_variants(source, manifest)
+        for variant in variants:
+            _claim(claimed, variant, source)
+            if layout == "single":
+                out[variant] = {**manifest, "source_manifest": source}
+            else:
+                out[variant] = {
+                    **{k: manifest[k] for k in _SHARED_RUN_KEYS if k in manifest},
+                    "source_manifest": source,
+                    "shared_with_variants": variants,
+                }
+    return out
+
+
+def _resource_record(**fields: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "reported": True, "source_manifest": None, "backend": None, "synthetic": None, "scope": None,
+        "n_requests": 0, "n_requests_in_run": None, "n_with_tokens": 0, "n_invalid_resource_fields": 0,
+        "input_tokens_total": None, "output_tokens_total": None,
+        "input_tokens_mean": None, "output_tokens_mean": None, "token_count_methods": [],
+        "n_with_latency": 0, "latency_s_total": None, "latency_s_mean": None,
+        "run_runtime_s": None, "note": "",
+    }
+    base.update(fields)
+    return base
+
+
+def summarize_run_manifests(
+    manifests: Sequence[ManifestSource], in_scope_pairs: Optional[Collection[str]] = None
+) -> dict[str, dict[str, Any]]:
+    """Runtime/token/latency totals per variant.
+
+    ``in_scope_pairs`` restricts multi-variant request records to the pairs being
+    scored (for example one split). A single-variant manifest has no per-pair
+    data, so its ``scope`` is ``whole_run``. Token totals cover only requests that
+    logged both counts (``n_with_tokens``); malformed fields are counted in
+    ``n_invalid_resource_fields`` rather than silently treated as zero.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    claimed: dict[str, str] = {}
+    scope_set = set(in_scope_pairs) if in_scope_pairs is not None else None
+    for source, manifest in manifests:
+        layout, variants = _manifest_variants(source, manifest)
+        backend = manifest.get("backend") if isinstance(manifest.get("backend"), str) else None
+        synthetic = manifest.get("synthetic") if isinstance(manifest.get("synthetic"), bool) else (
+            None if backend is None else backend == "stub"
+        )
+        run_runtime = _seconds(manifest.get("runtime_s"))
+        for variant in variants:
+            _claim(claimed, variant, source)
+
+        if layout == "single":
+            n_inputs = _count(manifest.get("n_inputs"))
+            out[variants[0]] = _resource_record(
+                source_manifest=source, backend=backend, synthetic=synthetic, scope="whole_run",
+                n_requests=n_inputs or 0, n_requests_in_run=n_inputs, run_runtime_s=run_runtime,
+                note="whole-run wall time for every input; no per-pair or token data in this manifest",
+            )
+            continue
+
+        for variant in variants:
+            mine = [
+                r for r in manifest["requests"]
+                if isinstance(r, Mapping) and r.get("model_variant") == variant
+            ]
+            kept = [r for r in mine if scope_set is None or str(r.get("pair_id")) in scope_set]
+            in_tok, out_tok, lat, methods, invalid = [], [], [], set(), 0
+            for r in kept:
+                a, b = _count(r.get("input_tokens")), _count(r.get("output_tokens"))
+                if (r.get("input_tokens") is not None and a is None) or (r.get("output_tokens") is not None and b is None):
+                    invalid += 1
+                if a is not None and b is not None:
+                    in_tok.append(a)
+                    out_tok.append(b)
+                    if isinstance(r.get("token_count_method"), str):
+                        methods.add(r["token_count_method"])
+                t = _seconds(r.get("latency_s"))
+                if r.get("latency_s") is not None and t is None:
+                    invalid += 1
+                if t is not None:
+                    lat.append(t)
+            out[variant] = _resource_record(
+                source_manifest=source, backend=backend, synthetic=synthetic,
+                scope="in_scope_requests" if scope_set is not None else "all_requests",
+                n_requests=len(kept), n_requests_in_run=len(mine),
+                n_with_tokens=len(in_tok), n_invalid_resource_fields=invalid,
+                input_tokens_total=sum(in_tok) if in_tok else None,
+                output_tokens_total=sum(out_tok) if out_tok else None,
+                input_tokens_mean=statistics.fmean(in_tok) if in_tok else None,
+                output_tokens_mean=statistics.fmean(out_tok) if out_tok else None,
+                token_count_methods=sorted(methods),
+                n_with_latency=len(lat),
+                latency_s_total=sum(lat) if lat else None,
+                latency_s_mean=statistics.fmean(lat) if lat else None,
+                run_runtime_s=run_runtime,
+                note=(
+                    "latency_s is each request's own latency; run_runtime_s is shared by all variants in the run"
+                    + ("; token counts are upper bounds, not tokenizer output" if "utf8_bytes_upper_bound" in methods else "")
+                ),
+            )
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Evaluation
 # --------------------------------------------------------------------------- #
 def evaluate(
@@ -431,8 +620,13 @@ def evaluate(
     variants: Optional[Sequence[str]] = None,
     views: Optional[Mapping[str, Mapping[str, Any]]] = None,
     injection_times: Optional[Mapping[str, float]] = None,
+    resources: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> dict[str, Any]:
-    """Score every variant against ``truth``. All truth pairs are scored for every variant."""
+    """Score every variant against ``truth``. All truth pairs are scored for every variant.
+
+    ``resources`` is the output of ``summarize_run_manifests``; it is attached
+    per variant and never changes a score.
+    """
     in_scope = {t.pair_id for t in truth}
     chosen = list(variants) if variants else sorted(set(cfg.expected_variants) | set(indexed.variants))
     tasks_present = [task for task in TASKS if any(t.task == task for t in truth)]
@@ -440,6 +634,7 @@ def evaluate(
     result: dict[str, Any] = {
         "n_truth_pairs": len(truth),
         "labels": list(FAILURE_MODES),
+        "unsupported_labels": list(UNSUPPORTED_FAILURE_MODES),
         "variants": {},
         "predictions_outside_scope": sum(1 for pid, _ in indexed.by_key if pid not in in_scope),
         "unattributable_invalid_lines": {
@@ -451,6 +646,13 @@ def evaluate(
         "warnings": [],
     }
 
+    unsupported_truth = [t.pair_id for t in truth if t.failure_mode in UNSUPPORTED_FAILURE_MODES]
+    if unsupported_truth:
+        result["warnings"].append(
+            f"{len(unsupported_truth)} ground-truth pair(s) carry an unsupported failure mode "
+            f"({', '.join(UNSUPPORTED_FAILURE_MODES)}); reported per class but excluded from macro-F1"
+        )
+
     for variant in chosen:
         outcomes = [(t, _outcome(indexed.by_key.get((t.pair_id, variant)))) for t in truth]
         backends = sorted({o.record.backend for _, o in outcomes if o.record is not None})
@@ -461,6 +663,7 @@ def evaluate(
         entry: dict[str, Any] = {
             "backends": backends,
             "synthetic": "stub" in backends,
+            "resources": dict(resources[variant]) if resources and variant in resources else {"reported": False},
             "slices": slices,
             "evidence": _evidence_report(outcomes, views, cfg.evidence) if views is not None else {"checked": False},
             "onset": (
@@ -478,6 +681,13 @@ def evaluate(
                 )
         if entry["synthetic"]:
             result["warnings"].append(f"{variant}: stub backend present; results are SYNTHETIC, not model output")
+        res_backend = entry["resources"].get("backend")
+        if res_backend and backends and res_backend not in backends:
+            result["warnings"].append(
+                f"{variant}: run manifest backend {res_backend!r} does not match prediction backend(s) {backends}"
+            )
+    for variant in sorted(set(resources or {}) - set(chosen)):
+        result["warnings"].append(f"run manifest describes variant {variant!r}, which has no scored predictions")
     if result["unattributable_invalid_lines"]["count"]:
         result["warnings"].append(
             f"{result['unattributable_invalid_lines']['count']} invalid prediction line(s) could not be tied to a pair"
@@ -508,6 +718,9 @@ _CSV_COLUMNS = (
 )
 
 
+_RESOURCE_COLUMNS = ("input_tokens_total", "output_tokens_total", "latency_s_total", "latency_s_mean", "run_runtime_s")
+
+
 def metrics_rows(result: Mapping[str, Any]) -> list[dict[str, Any]]:
     """One row per (variant, slice) for ``metrics.csv``."""
     rows = []
@@ -517,6 +730,9 @@ def metrics_rows(result: Mapping[str, Any]) -> list[dict[str, Any]]:
             row.update({col: sl[col] for col in _CSV_COLUMNS})
             ev = entry["evidence"]
             row["evidence_support_rate"] = ev.get("support_rate") if name == "all" and ev.get("checked") else None
+            res = entry.get("resources", {}) if name == "all" else {}
+            for col in _RESOURCE_COLUMNS:
+                row[col] = res.get(col)
             rows.append(row)
     return rows
 
@@ -545,6 +761,22 @@ def _pct(x: Optional[float]) -> str:
     return "  n/a" if x is None else f"{100 * x:5.1f}%"
 
 
+def _resource_line(res: Mapping[str, Any]) -> str:
+    if not res.get("reported"):
+        return "not reported (pass --run-manifest)"
+    parts = []
+    if res.get("input_tokens_total") is not None:
+        methods = ", ".join(res.get("token_count_methods") or []) or "method not stated"
+        parts.append(f"tokens in/out {res['input_tokens_total']}/{res['output_tokens_total']} ({methods})")
+    else:
+        parts.append("no token counts logged")
+    if res.get("latency_s_total") is not None:
+        parts.append(f"request latency {res['latency_s_total']:.3f} s over {res['n_with_latency']} request(s)")
+    if res.get("run_runtime_s") is not None:
+        parts.append(f"run wall time {res['run_runtime_s']:.3f} s ({res['scope']})")
+    return "; ".join(parts)
+
+
 def format_summary(result: Mapping[str, Any]) -> str:
     lines = [f"Evaluated {result['n_truth_pairs']} ground-truth pair(s)."]
     for variant, entry in result["variants"].items():
@@ -562,6 +794,7 @@ def format_summary(result: Mapping[str, Any]) -> str:
                 f"  evidence: {ev['n_supported']}/{ev['n_items'] - ev['n_unverifiable']} items supported"
                 f" ({ev['n_unsupported']} unsupported, {ev['n_unverifiable']} unverifiable)"
             )
+        lines.append(f"  resources: {_resource_line(entry.get('resources', {}))}")
     for warning in result["warnings"]:
         lines.append(f"WARNING: {warning}")
     return "\n".join(lines)
