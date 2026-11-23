@@ -31,6 +31,7 @@ from telemetry_reasoning.eval.plots import (
     PanelSpec,
     Series,
     TelemetryTrace,
+    _divergence_nodes,
     plot_confusion_matrix,
     plot_pair_telemetry,
     plot_variant_comparison,
@@ -379,3 +380,136 @@ def test_script_rejects_unknown_pair_ids(script, tmp_path, capsys):
                         "--pair-id", "999"]) == 2
     assert "999" in capsys.readouterr().err
     assert not (tmp_path / "o").exists()
+
+
+# --------------------------------------------------------------------------- #
+# Partial (early-terminated) failure traces: the suffix is not observed
+# (regression: _divergence_nodes called min() on an empty failure_samples list)
+# --------------------------------------------------------------------------- #
+def make_partial_bt(unobserved=("lift",), divergence="computed"):
+    """``make_bt`` with the named trailing subtasks never observed in the failure run."""
+    bt = make_bt(divergence)
+    for node in bt["subtasks"]:
+        if node["subtask"] in unobserved:
+            node.update(failure_samples=[], deterministic_divergence=None,
+                        failure_observation_status="not_observed", divergence_status="not_comparable")
+    return bt
+
+
+def partial_traces(n_failure_rows=300):
+    """Failure run stops before 6.00 s (so ``lift`` is unobserved); the success run is complete."""
+    return trace_from_rows(make_rows(False)), trace_from_rows(make_rows(True)[:n_failure_rows])
+
+
+def hatched(ax):
+    return [p for p in ax.patches if p.get_hatch()]
+
+
+def x_extent(patch):
+    verts = patch.get_path().transformed(patch.get_patch_transform()).vertices
+    return float(verts[:, 0].min()), float(verts[:, 0].max())
+
+
+def test_divergence_nodes_skip_unobserved_subtasks_without_inventing_values():
+    nodes = _divergence_nodes(make_partial_bt())
+    assert [(n["subtask"], n["observed"]) for n in nodes] == [
+        ("approach", True), ("align", True), ("grasp", True), ("lift", False)]
+    lift = nodes[-1]
+    assert lift["start"] is None and lift["end"] is None and lift["divergence"] is None
+    assert lift["status"] == "not_comparable"
+    grasp = nodes[2]  # the last observed node ends at its own final sample, not at a later stage
+    assert grasp["start"] == pytest.approx(4.0) and grasp["end"] == pytest.approx(5.98)
+    assert nodes[0]["end"] == pytest.approx(nodes[1]["start"])
+
+
+def test_divergence_nodes_handle_several_unobserved_stages_and_dicts_without_status_fields():
+    nodes = _divergence_nodes(make_partial_bt(unobserved=("grasp", "lift")))
+    assert [n["observed"] for n in nodes] == [True, True, False, False]
+    align = nodes[1]  # now the last observed stage: it ends at its own final sample, not at a later stage
+    assert align["start"] == pytest.approx(2.0) and align["end"] == pytest.approx(3.98)
+    assert all(n["start"] is None and n["status"] == "not_comparable" for n in nodes[2:])
+    assert _divergence_nodes(None) == [] and _divergence_nodes({}) == []
+
+
+def test_partial_trace_figure_builds_and_draws_no_bar_for_the_unobserved_stage():
+    success, failure = partial_traces()
+    fig = plot_pair_telemetry(success, failure, bt=make_partial_bt(), divergence_feature="gripper_force")
+    ax = fig.axes[-1]
+    heights = {round(p.get_x(), 6): p.get_height() for p in bars(ax)}
+    assert heights == {0.0: 0.0, 2.0: 0.0, 4.0: 12.0}  # no bar at 6.0: lift is not comparable, never zero
+    assert not any("not computed" in t.get_text() for t in ax.texts)
+
+
+def test_unobserved_band_is_hatched_on_every_panel_and_spans_trace_end_to_success_end():
+    success, failure = partial_traces()
+    fig = plot_pair_telemetry(success, failure, bt=make_partial_bt())
+    for ax in fig.axes:
+        spans = [x_extent(p) for p in hatched(ax)]
+        assert len(spans) == 1, ax.get_title()
+        assert spans[0] == pytest.approx((5.98, 7.98))
+    top_texts = [t.get_text() for t in fig.axes[0].texts]
+    assert "lift\n(not observed)" in top_texts
+    assert any("not comparable" in t.get_text() for t in fig.axes[-1].texts)
+    legend_labels = [t.get_text() for t in fig.legends[0].get_texts()]
+    assert "failure trace ended (not observed)" in legend_labels
+
+
+def test_full_traces_have_no_unobserved_band_or_label(traces):
+    fig = plot_pair_telemetry(*traces, bt=make_bt())
+    assert all(not hatched(ax) for ax in fig.axes)
+    assert not any("not observed" in t.get_text() for ax in fig.axes for t in ax.texts)
+
+
+def test_several_unobserved_stages_are_named_together():
+    success, failure = partial_traces(200)  # failure stops at 3.98 s, inside align
+    bt = make_partial_bt(unobserved=("grasp", "lift"))
+    fig = plot_pair_telemetry(success, failure, bt=bt)
+    assert "grasp, lift\n(not observed)" in [t.get_text() for t in fig.axes[0].texts]
+    assert [x_extent(p) for p in hatched(fig.axes[-1])] == [pytest.approx((3.98, 7.98))]
+
+
+def test_unobserved_band_is_skipped_when_it_would_have_no_width():
+    success = trace_from_rows(make_rows(False)[:100])      # success run stops at 1.98 s ...
+    failure = trace_from_rows(make_rows(True)[:100])       # ... exactly where the failure run stops
+    fig = plot_pair_telemetry(success, failure, bt=make_partial_bt(unobserved=("lift",)))
+    assert all(not hatched(ax) for ax in fig.axes)  # nothing to hatch, and no exception
+
+
+def test_observed_but_uncomputed_stage_is_labelled_not_drawn_as_zero_next_to_computed_ones():
+    success, failure = partial_traces()
+    bt = make_partial_bt()
+    bt["subtasks"][1]["deterministic_divergence"] = None  # align: observed, divergence still uncomputed
+    ax = plot_pair_telemetry(success, failure, bt=bt, divergence_feature="gripper_force").axes[-1]
+    heights = {round(p.get_x(), 6): p.get_height() for p in bars(ax)}
+    assert heights == {0.0: 0.0, 4.0: 12.0}  # no bar for align (2.0)
+    assert [t.get_text() for t in ax.texts].count("not computed") == 1
+
+
+def test_partial_trace_figure_saves_as_a_png(tmp_path):
+    success, failure = partial_traces()
+    path = save_figure(plot_pair_telemetry(success, failure, bt=make_partial_bt(), injection_time=5.1,
+                                           predicted_onset=5.12), tmp_path / "partial.png", dpi=60)
+    assert path.read_bytes()[:4] == b"\x89PNG" and path.stat().st_size > 1000
+
+
+def test_plot_script_handles_a_real_partial_trace_through_the_real_parser(tmp_path, capsys):
+    """Real loaders, no stubs: truncated failure CSV -> parse_dataset -> BT with an unobserved suffix -> PNG."""
+    sample = ROOT / "data" / "sample"
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "metadata.csv").write_bytes((sample / "metadata.csv").read_bytes())
+    (data / "success_000.csv").write_bytes((sample / "success_000.csv").read_bytes())
+    failure = pd.read_csv(sample / "failure_000.csv")
+    failure[failure["subtask"] != "lift"].to_csv(data / "failure_000.csv", index=False)
+
+    bt_dir = tmp_path / "bt"
+    assert load_script("parse_dataset").main(["--metadata", str(data / "metadata.csv"), "--data-dir", str(data),
+                                              "--output-dir", str(bt_dir)]) == 0
+    tree = json.loads((bt_dir / "pair_000_bt.json").read_text())
+    assert [n["failure_observation_status"] for n in tree["subtasks"]] == ["observed"] * 3 + ["not_observed"]
+
+    out = tmp_path / "plots"
+    assert load_script("plot_telemetry").main(["--data-dir", str(data), "--bt-dir", str(bt_dir),
+                                               "--output-dir", str(out)]) == 0
+    png = out / "telemetry_000.png"
+    assert png.read_bytes()[:4] == b"\x89PNG" and png.stat().st_size > 5000

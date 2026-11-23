@@ -17,12 +17,14 @@ from pydantic import ValidationError
 
 from telemetry_reasoning.eval.contracts import (
     BACKENDS,
+    DATASET_FAILURE_MODES,
     FAILURE_MODES,
     FEATURE_SHAPES,
     MODEL_VARIANTS,
     SUBTASKS,
     TASK_SUBTASKS,
     TASKS,
+    UNSUPPORTED_FAILURE_MODES,
     ContractError,
     EvidenceItem,
     PredictionRecord,
@@ -46,6 +48,8 @@ from telemetry_reasoning.eval.metrics import (
     load_manifest,
     metrics_rows,
     predicted_onset,
+    run_manifest_provenance,
+    summarize_run_manifests,
     truth_from_rows,
 )
 
@@ -743,3 +747,267 @@ def test_evaluate_with_an_empty_predictions_file_scores_everything_missing(ev_sc
     assert ev_script.main(["--metadata", "m.csv", "--predictions", str(preds), "--config", str(cfg), "--output-dir", str(out)]) == 0
     sl = json.loads((out / "metrics.json").read_text())["variants"]["baseline_1"]["slices"]["all"]
     assert sl["n_missing"] == 2 and sl["failure_mode_accuracy"] == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# excessive_speed: a valid label with no accepted dataset examples
+# --------------------------------------------------------------------------- #
+SPEED = "excessive_speed"
+
+
+def test_excessive_speed_is_a_valid_prediction_and_vocabulary_matches_schemas():
+    assert SPEED in FAILURE_MODES and SPEED in UNSUPPORTED_FAILURE_MODES
+    assert SPEED not in DATASET_FAILURE_MODES and len(DATASET_FAILURE_MODES) == 4
+    assert PredictionRecord.model_validate(rec("000", mode=SPEED)).predicted_failure_mode == SPEED
+    assert not parse_prediction_lines([json.dumps(rec("000", mode=SPEED))]).invalid
+
+
+def test_unsupported_class_is_reported_but_excluded_from_both_macro_averages():
+    ts = [truth("A", POS, "approach"), truth("B", GRIP)]
+    idx = index([rec("A", mode=POS, subtask="approach"), rec("B", mode=GRIP)], ["A", "B"])
+    sl = evaluate(ts, idx, CFG)["variants"]["baseline_1"]["slices"]["all"]
+    row = sl["per_class"][SPEED]
+    assert row["unsupported"] is True and row["support"] == 0 and row["predicted"] == 0 and row["f1"] is None
+    assert all(sl["per_class"][m]["unsupported"] is False for m in DATASET_FAILURE_MODES)
+    assert sl["unsupported_labels"] == [SPEED]
+    assert sl["macro_f1"] == 1.0  # mean over the two observed dataset classes only
+    # two perfect classes out of four dataset labels; the unsupported class must not count as a fifth
+    assert sl["macro_f1_fixed_labels"] == pytest.approx(0.5)
+
+
+def test_predicting_the_unsupported_class_is_a_false_positive_and_incorrect():
+    ts = [truth("A", GRIP)]
+    res = evaluate(ts, index([rec("A", mode=SPEED)], ["A"]), CFG)
+    sl = res["variants"]["baseline_1"]["slices"]["all"]
+    assert sl["failure_mode_accuracy"] == 0.0 and sl["per_class"][SPEED]["predicted"] == 1
+    assert sl["per_class"][GRIP]["recall"] == 0.0 and sl["macro_f1"] == 0.0
+    conf = sl["confusion"]
+    assert conf["matrix"][conf["labels"].index(GRIP)][conf["columns"].index(SPEED)] == 1
+    assert res["unsupported_labels"] == [SPEED]
+
+
+def test_truth_with_the_unsupported_mode_is_accepted_warned_and_not_in_macro():
+    ts = truth_from_rows([SimpleNamespace(pair_id="S", task="pick_up_object", failed_subtask="approach", failure_mode=SPEED)])
+    res = evaluate(ts + [truth("A", GRIP)], index([rec("A", mode=GRIP)], ["S", "A"]), CFG)
+    sl = res["variants"]["baseline_1"]["slices"]["all"]
+    assert sl["per_class"][SPEED]["support"] == 1 and sl["per_class"][SPEED]["recall"] == 0.0
+    assert sl["macro_f1"] == 1.0  # only the supported GRIP class is averaged
+    assert any("unsupported failure mode" in w for w in res["warnings"])
+    json.dumps(res, allow_nan=False)
+
+
+# --------------------------------------------------------------------------- #
+# evaluate.py --bt-dir through the REAL loaders (regression: the script called
+# .model_dump() on the dict returned by to_failure_only(); other tests stub the loader)
+# --------------------------------------------------------------------------- #
+SAMPLE = ROOT / "data" / "sample"
+
+
+def test_evaluate_script_verifies_evidence_against_a_real_stored_bt(tmp_path, capsys):
+    bt = tmp_path / "bt"
+    bt.mkdir()
+    (bt / "pair_000_bt.json").write_text((SAMPLE / "pair_000_bt.json").read_text())
+    preds = tmp_path / "baseline_1.jsonl"
+    assert load_script("run_baseline").main(["--bt-dir", str(bt), "--output", str(preds)]) == 0
+
+    out = tmp_path / "eval"
+    code = load_script("evaluate").main([
+        "--metadata", str(SAMPLE / "metadata.csv"), "--predictions", str(preds),
+        "--bt-dir", str(bt), "--output-dir", str(out),
+    ])
+    assert code == 0, capsys.readouterr().err
+    entry = json.loads((out / "metrics.json").read_text())["variants"]["baseline_1"]
+    assert entry["evidence"]["checked"] is True
+    assert entry["evidence"]["n_items"] > 0 and entry["evidence"]["n_unsupported"] == 0
+    assert entry["evidence"]["n_unverifiable"] == 0 and entry["evidence"]["support_rate"] == 1.0
+
+
+def test_evaluate_script_flags_tampered_evidence_against_a_real_stored_bt(tmp_path):
+    bt = tmp_path / "bt"
+    bt.mkdir()
+    (bt / "pair_000_bt.json").write_text((SAMPLE / "pair_000_bt.json").read_text())
+    forged = rec("000", evidence=[ev(timestamp=5.1, value=14.0)])  # the stored sample says 3.0 N
+    preds = tmp_path / "p.jsonl"
+    write_predictions(preds, [forged])
+    out = tmp_path / "eval"
+    assert load_script("evaluate").main([
+        "--metadata", str(SAMPLE / "metadata.csv"), "--predictions", str(preds),
+        "--bt-dir", str(bt), "--output-dir", str(out),
+    ]) == 0
+    evidence = json.loads((out / "metrics.json").read_text())["variants"]["baseline_1"]["evidence"]
+    assert evidence["n_unsupported"] == 1 and evidence["unsupported_by_reason"] == {"value_mismatch": 1}
+
+
+# --------------------------------------------------------------------------- #
+# Run manifests: provenance and runtime/token aggregation
+# --------------------------------------------------------------------------- #
+def request(pair, variant, tin=100, tout=10, latency=0.5, method="tokenizer", **extra):
+    return {"pair_id": pair, "model_variant": variant, "input_tokens": tin, "output_tokens": tout,
+            "token_count_method": method, "latency_s": latency, **extra}
+
+
+def llm_manifest(requests, variants=("baseline_2", "main"), backend="hf", **extra):
+    return {"backend": backend, "synthetic": backend == "stub", "variants": list(variants),
+            "requests": requests, "runtime_s": 9.0, "model": {"id": "m", "revision": "r"},
+            "decoding": {"seed": 723}, "config_sha256": "ab" * 32, **extra}
+
+
+BASELINE_MANIFEST = {"model_variant": "baseline_1", "backend": "rules", "n_inputs": 3, "runtime_s": 0.25,
+                     "status_counts": {"ok": 3}}
+
+
+def test_multi_variant_manifest_is_summarized_per_variant_and_scoped_to_pairs():
+    m = llm_manifest([
+        request("A", "baseline_2", 100, 10, 0.5), request("B", "baseline_2", 300, 30, 1.5),
+        request("A", "main", 700, 70, 2.0), request("Z", "main", 9999, 999, 99.0),  # Z is out of scope
+    ])
+    res = summarize_run_manifests([("run/run_manifest.json", m)], in_scope_pairs={"A", "B"})
+    b2, main = res["baseline_2"], res["main"]
+    assert (b2["input_tokens_total"], b2["output_tokens_total"]) == (400, 40)
+    assert (b2["input_tokens_mean"], b2["latency_s_total"], b2["latency_s_mean"]) == (200.0, 2.0, 1.0)
+    assert (b2["n_requests"], b2["n_with_tokens"], b2["scope"]) == (2, 2, "in_scope_requests")
+    assert (main["input_tokens_total"], main["n_requests"], main["n_requests_in_run"]) == (700, 1, 2)
+    assert main["latency_s_total"] == 2.0 and main["run_runtime_s"] == 9.0  # shared run time, not split
+    assert b2["token_count_methods"] == ["tokenizer"] and b2["backend"] == "hf" and b2["synthetic"] is False
+    assert b2["source_manifest"] == "run/run_manifest.json"
+
+
+def test_without_a_pair_scope_every_request_counts():
+    m = llm_manifest([request("A", "main"), request("Z", "main")], variants=("main",))
+    res = summarize_run_manifests([("m", m)])["main"]
+    assert res["n_requests"] == 2 and res["scope"] == "all_requests"
+
+
+def test_single_variant_manifest_reports_wall_time_but_never_invented_tokens():
+    res = summarize_run_manifests([("b1.manifest.json", BASELINE_MANIFEST)], in_scope_pairs={"A"})["baseline_1"]
+    assert res["scope"] == "whole_run" and res["run_runtime_s"] == 0.25 and res["n_requests"] == 3
+    assert res["input_tokens_total"] is None and res["output_tokens_total"] is None
+    assert res["latency_s_total"] is None and res["token_count_methods"] == []
+    assert res["backend"] == "rules" and res["synthetic"] is False
+
+
+def test_missing_and_malformed_resource_fields_are_not_treated_as_zero():
+    m = llm_manifest([
+        request("A", "main"),
+        request("B", "main", tin=None, tout=None, latency=None),      # not logged
+        request("C", "main", tin=-5, tout=10, latency=float("nan")),  # malformed
+        request("D", "main", tin=True, tout=10, latency="fast"),      # wrong types
+    ], variants=("main",))
+    res = summarize_run_manifests([("m", m)])["main"]
+    assert res["n_requests"] == 4 and res["n_with_tokens"] == 1 and res["n_with_latency"] == 1
+    assert res["input_tokens_total"] == 100 and res["latency_s_total"] == 0.5
+    assert res["n_invalid_resource_fields"] == 4  # C: tokens + latency, D: tokens + latency
+
+    empty = summarize_run_manifests([("m", llm_manifest([request("A", "main", None, None, None)], ("main",)))])["main"]
+    assert empty["input_tokens_total"] is None and empty["latency_s_total"] is None and empty["n_requests"] == 1
+
+
+def test_stub_token_counts_are_labelled_as_upper_bounds():
+    m = llm_manifest([request("A", "main", method="utf8_bytes_upper_bound")], ("main",), backend="stub")
+    res = summarize_run_manifests([("m", m)])["main"]
+    assert res["synthetic"] is True and "upper bounds" in res["note"]
+    assert res["token_count_methods"] == ["utf8_bytes_upper_bound"]
+
+
+def test_two_manifests_for_one_variant_and_unrecognized_manifests_are_rejected():
+    a = llm_manifest([request("A", "main")], ("main",))
+    b = llm_manifest([request("A", "main")], ("main",), backend="stub")
+    for fn in (summarize_run_manifests, run_manifest_provenance):
+        with pytest.raises(ContractError, match="both describe variant 'main'"):
+            fn([("real/run_manifest.json", a), ("stub/run_manifest.json", b)])
+    for bad in ({"n_inputs": 3}, {"model_variant": "gpt"}, llm_manifest([request("A", "gpt")], ("gpt",))):
+        with pytest.raises(ContractError):
+            summarize_run_manifests([("bad.json", bad)])
+
+
+def test_provenance_embeds_single_manifests_whole_and_compacts_shared_runs():
+    shared = llm_manifest([request("A", "baseline_2"), request("A", "main")])
+    prov = run_manifest_provenance([("b1.json", BASELINE_MANIFEST), ("run.json", shared)])
+    assert prov["baseline_1"]["backend"] == "rules" and prov["baseline_1"]["source_manifest"] == "b1.json"
+    for variant in ("baseline_2", "main"):
+        entry = prov[variant]
+        assert "requests" not in entry  # per-request records live in the resource summary
+        assert entry["model"] == {"id": "m", "revision": "r"} and entry["source_manifest"] == "run.json"
+        assert entry["shared_with_variants"] == ["baseline_2", "main"]
+
+
+def test_evaluate_attaches_resources_without_changing_scores():
+    ts = [truth("A")]
+    idx = index([rec("A"), rec("A", variant="main", backend="hf")], ["A"])
+    plain = evaluate(ts, idx, CFG)
+    res = summarize_run_manifests([("m", llm_manifest([request("A", "main")], ("main",)))], in_scope_pairs={"A"})
+    scored = evaluate(ts, idx, CFG, resources=res)
+    assert scored["variants"]["main"]["resources"]["input_tokens_total"] == 100
+    assert scored["variants"]["baseline_1"]["resources"] == {"reported": False}
+    for v in ("baseline_1", "main"):
+        assert scored["variants"][v]["slices"] == plain["variants"][v]["slices"]
+    json.dumps(scored, allow_nan=False)
+
+
+def test_evaluate_warns_on_backend_mismatch_and_on_manifests_for_unscored_variants():
+    idx = index([rec("A", variant="main", backend="stub")], ["A"])
+    res = summarize_run_manifests([
+        ("real.json", llm_manifest([request("A", "main")], ("main",), backend="hf")),
+        ("b1.json", BASELINE_MANIFEST),
+    ])
+    out = evaluate([truth("A")], idx, CFG, resources=res)
+    assert any("main: run manifest backend 'hf' does not match" in w for w in out["warnings"])
+    assert any("'baseline_1', which has no scored predictions" in w for w in out["warnings"])
+
+
+def test_resources_reach_the_flat_csv_rows_and_the_text_summary():
+    idx = index([rec("A", variant="main", backend="stub")], ["A"])
+    res = summarize_run_manifests([("m", llm_manifest([request("A", "main", method="utf8_bytes_upper_bound")], ("main",), backend="stub"))])
+    out = evaluate([truth("A", task="pick_up_object")], idx, CFG, resources=res)
+    rows = metrics_rows(out)
+    assert [r["input_tokens_total"] for r in rows] == [100, None]  # "all" slice only
+    assert rows[0]["latency_s_total"] == 0.5 and rows[0]["run_runtime_s"] == 9.0
+    assert len({tuple(r) for r in rows}) == 1  # identical columns on every row
+    text = format_summary(out)
+    assert "tokens in/out 100/10 (utf8_bytes_upper_bound)" in text and "request latency 0.500 s" in text
+    unreported = format_summary(evaluate([truth("A")], index([rec("A")], ["A"]), CFG))
+    assert "resources: not reported (pass --run-manifest)" in unreported
+
+
+def test_evaluate_script_reports_resources_from_both_manifest_layouts(tmp_path, capsys):
+    ev_script = load_script("evaluate")
+    ev_script._read_metadata = lambda p: meta_rows("000", "001")
+    preds = tmp_path / "p.jsonl"
+    write_predictions(preds, [rec("000"), rec("001"),
+                              rec("000", variant="main", backend="hf"), rec("001", variant="main", backend="hf")])
+    b1 = tmp_path / "baseline_1.manifest.json"
+    b1.write_text(json.dumps(BASELINE_MANIFEST))
+    shared = tmp_path / "run_manifest.json"
+    shared.write_text(json.dumps(llm_manifest(
+        [request("000", "main", 100, 10, 1.0), request("001", "main", 200, 20, 2.0), request("999", "main", 5, 5, 5.0)],
+        ("main",))))
+    out = tmp_path / "eval"
+    assert ev_script.main(["--metadata", "m.csv", "--predictions", str(preds), "--output-dir", str(out),
+                           "--run-manifest", str(b1), str(shared)]) == 0
+    metrics = json.loads((out / "metrics.json").read_text())
+    main = metrics["variants"]["main"]["resources"]
+    assert (main["input_tokens_total"], main["output_tokens_total"], main["latency_s_total"]) == (300, 30, 3.0)
+    assert main["n_requests"] == 2 and main["n_requests_in_run"] == 3  # pair 999 is not in the truth set
+    assert metrics["variants"]["baseline_1"]["resources"]["run_runtime_s"] == 0.25
+    assert metrics["run_manifests"]["baseline_1"]["backend"] == "rules"
+    assert metrics["run_manifests"]["main"]["model"]["revision"] == "r" and "requests" not in metrics["run_manifests"]["main"]
+    header = (out / "metrics.csv").read_text().splitlines()[0].split(",")
+    assert {"input_tokens_total", "output_tokens_total", "latency_s_total"} <= set(header)
+    assert "resources: tokens in/out 300/30" in capsys.readouterr().out
+
+
+def test_evaluate_script_rejects_conflicting_or_unrecognized_run_manifests(tmp_path, capsys):
+    ev_script = load_script("evaluate")
+    ev_script._read_metadata = lambda p: meta_rows("000")
+    preds = tmp_path / "p.jsonl"
+    write_predictions(preds, [rec("000")])
+    one, two, bad = (tmp_path / n for n in ("one.json", "two.json", "bad.json"))
+    one.write_text(json.dumps(BASELINE_MANIFEST))
+    two.write_text(json.dumps(BASELINE_MANIFEST))
+    bad.write_text(json.dumps({"hello": "world"}))
+    for manifests, message in (([one, two], "both describe variant 'baseline_1'"), ([bad], "unrecognized run manifest")):
+        out = tmp_path / f"o{len(manifests)}{manifests[0].stem}"
+        assert ev_script.main(["--metadata", "m.csv", "--predictions", str(preds), "--output-dir", str(out),
+                               "--run-manifest", *map(str, manifests)]) == 2
+        assert message in capsys.readouterr().err
+        assert not (out / "metrics.json").exists()
